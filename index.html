@@ -106,7 +106,6 @@
       <button class="tab" data-tab="live">📡 Live Game</button>
       <button class="tab" data-tab="pool">🏆 Champion Pool</button>
       <button class="tab" data-tab="matchups">⚔️ Matchups</button>
-      <button class="tab" data-tab="builds">🛠️ Builds & Runes</button>
     </nav>
 
     <!-- COUNTER FINDER : use during champ select -->
@@ -161,7 +160,19 @@
     <section id="tab-pool" class="tab-content hidden">
       <div class="panel">
         <h2>Your Champion Pool</h2>
+        <p class="muted">Click a column header to sort. Click a champion to see its <b>builds & runes</b>,
+        mined from every player of that champion across your analyzed matches.</p>
         <div id="poolResults"></div>
+      </div>
+      <div class="panel">
+        <h2>🛠️ Build lookup</h2>
+        <p class="muted">Look up builds &amp; runes for <b>any</b> champion seen in your analyzed matches —
+        including ones you don't play.</p>
+        <div class="champ-search">
+          <input id="buildSearch" type="text" placeholder="Search a champion…" autocomplete="off" />
+          <div id="buildSuggest" class="champ-suggest hidden"></div>
+        </div>
+        <div id="buildResults"></div>
       </div>
       <div class="panel">
         <h2>😨 Enemies you struggle against</h2>
@@ -174,22 +185,25 @@
     <section id="tab-matchups" class="tab-content hidden">
       <div class="panel">
         <h2>Lane Matchup History</h2>
-        <p class="muted">Direct lane opponents only (same position, opposite team).</p>
-        <div id="matchupResults"></div>
-      </div>
-    </section>
-
-    <!-- BUILDS -->
-    <section id="tab-builds" class="tab-content hidden">
-      <div class="panel">
-        <h2>Builds & Runes</h2>
-        <p class="muted">Mined from the analyzed matches — every player of that champion across your games,
-        weighted toward <b>winning</b> games.</p>
-        <div class="champ-search">
-          <input id="buildSearch" type="text" placeholder="Search a champion…" autocomplete="off" />
-          <div id="buildSuggest" class="champ-suggest hidden"></div>
+        <p class="muted">Direct lane opponents only (same position, opposite team). Click a column header to sort.</p>
+        <div class="filter-row">
+          <input id="muSearch" type="text" placeholder="Filter by champion (yours or theirs)…" autocomplete="off" />
+          <select id="muRole" title="Filter by lane">
+            <option value="">All lanes</option>
+            <option value="TOP">Top</option>
+            <option value="JUNGLE">Jungle</option>
+            <option value="MIDDLE">Mid</option>
+            <option value="BOTTOM">ADC</option>
+            <option value="UTILITY">Support</option>
+          </select>
+          <select id="muMinGames" title="Minimum games">
+            <option value="1">≥ 1 game</option>
+            <option value="2">≥ 2 games</option>
+            <option value="3">≥ 3 games</option>
+            <option value="5">≥ 5 games</option>
+          </select>
         </div>
-        <div id="buildResults"></div>
+        <div id="matchupResults"></div>
       </div>
     </section>
   </main>

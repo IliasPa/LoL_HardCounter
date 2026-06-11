@@ -17,6 +17,13 @@ let agg = null;         // aggregated stats
 let enemyPicks = [];    // Counter Finder enemy champ ids
 let importedCache = {}; // puuid -> {matchId: record} seeded from gist / JSON import
 
+// UI state
+let poolSort = { key: 'games', dir: -1 };   // champion pool sorting
+let poolExpanded = null;                    // champ id whose builds are expanded in the pool
+let muSort = { key: 'games', dir: -1 };     // matchups sorting
+let expandedMatchId = null;                 // match id expanded in the Profile tab
+let profileShowAll = false;                 // "Show all games" toggled
+
 const $ = id => document.getElementById(id);
 
 const QUEUE_NAMES = {
@@ -70,6 +77,10 @@ function init() {
   $('clearEnemiesBtn').onclick = () => { enemyPicks = []; renderCounterTab(); };
   $('myRole').onchange = renderCounterTab;
   $('liveBtn').onclick = checkLiveGame;
+
+  $('muSearch').oninput = renderMatchups;
+  $('muRole').onchange = renderMatchups;
+  $('muMinGames').onchange = renderMatchups;
 }
 
 function updateKeyStatus() {
@@ -180,8 +191,28 @@ function champCell(name, small = false) {
 function wrSpan(wr, games) {
   const cls = wr >= 0.55 ? 'good' : wr <= 0.45 ? 'bad' : 'mid';
   return `<span class="wr ${cls}">${Math.round(wr * 100)}%</span>
-    <span class="wr-bar"><i style="width:${Math.round(wr * 100)}%"></i></span>
-    <span class="muted"> (${games}g)</span>`;
+    <span class="wr-bar"><i style="width:${Math.round(wr * 100)}%"></i></span>` +
+    (games != null ? `<span class="muted"> (${games}g)</span>` : '');
+}
+
+function kdaSpan(v) {
+  const cls = v >= 4 ? 'good' : v < 2 ? 'bad' : 'mid';
+  return `<span class="wr ${cls}">${v.toFixed(2)}</span>`;
+}
+
+// clickable sort header; state = {key, dir}
+function sortTh(state, key, label, title = '') {
+  const active = state.key === key;
+  return `<th class="sortable${active ? ' sorted' : ''}" data-key="${key}" ${title ? `title="${title}"` : ''}>
+    ${label}${active ? (state.dir === -1 ? ' ▼' : ' ▲') : ''}</th>`;
+}
+
+function bindSortHeaders(container, state, rerender) {
+  container.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
+    if (state.key === th.dataset.key) state.dir *= -1;
+    else { state.key = th.dataset.key; state.dir = -1; }
+    rerender();
+  });
 }
 
 function timeAgo(ts) {
@@ -321,6 +352,9 @@ async function syncToGist(token, gistId) {
 }
 
 function renderAll() {
+  expandedMatchId = null;
+  poolExpanded = null;
+  profileShowAll = false;
   renderSummary();
   renderCounterTab();
   renderProfile();
@@ -400,38 +434,131 @@ function renderProfile() {
     <div class="panel">
       <h2>Recent games <span class="muted" style="font-weight:400;font-size:0.75em">
         last ${last20.length}: ${wins20}W ${last20.length - wins20}L (${last20.length ? Math.round(wins20 / last20.length * 100) : 0}%)
-        · KDA ${(d === 0 ? k + a : (k + a) / d).toFixed(2)}</span></h2>
-      <div class="match-list" id="matchList">${recent.slice(0, 25).map(matchRow).join('')}</div>
-      ${recent.length > 25 ? `<button id="moreMatchesBtn" class="btn ghost" style="margin-top:10px">Show all ${recent.length} games</button>` : ''}
+        · KDA ${(d === 0 ? k + a : (k + a) / d).toFixed(2)} · click a game for details</span></h2>
+      <div class="match-list" id="matchList"></div>
+      <div id="moreMatchesSlot"></div>
     </div>`;
 
-  const moreBtn = $('moreMatchesBtn');
-  if (moreBtn) moreBtn.onclick = () => {
-    $('matchList').innerHTML = recent.map(matchRow).join('');
-    moreBtn.remove();
-  };
+  renderMatchList();
 }
 
-function matchRow(r) {
+function renderMatchList() {
+  const recent = [...records].sort((a, b) => b.ts - a.ts);
+  const shown = profileShowAll ? recent : recent.slice(0, 25);
+  $('matchList').innerHTML = shown.map(matchCard).join('');
+  $('moreMatchesSlot').innerHTML = (!profileShowAll && recent.length > 25)
+    ? `<button id="moreMatchesBtn" class="btn ghost" style="margin-top:10px">Show all ${recent.length} games</button>` : '';
+
+  $('matchList').querySelectorAll('.match-card > .match-row').forEach(row => {
+    row.onclick = () => {
+      const id = row.parentElement.dataset.mid;
+      expandedMatchId = expandedMatchId === id ? null : id;
+      renderMatchList();
+    };
+  });
+  const moreBtn = $('moreMatchesBtn');
+  if (moreBtn) moreBtn.onclick = () => { profileShowAll = true; renderMatchList(); };
+}
+
+function myParticipant(r) {
+  return r.participants.find(p => p.me)
+      || r.participants.find(p => p.team === r.myTeam && p.champ === r.champ);
+}
+
+function matchCard(r) {
   const c = champOf(r.champ);
-  const mine = r.participants.find(p => p.team === r.myTeam && p.champ === r.champ);
+  const mine = myParticipant(r);
   const items = (mine?.items || []).map(id => {
     const it = dd.items[id];
     return it ? `<img src="${it.icon}" title="${it.name}" alt="" loading="lazy"/>` : '';
   }).join('');
   const mm = Math.floor(r.dur / 60);
   const kdaVal = r.d === 0 ? r.k + r.a : (r.k + r.a) / r.d;
-  return `<div class="match-row ${r.win ? 'won' : 'lost'}">
-    <div class="m-result">${r.win ? 'WIN' : 'LOSS'}<span class="muted">${QUEUE_NAMES[r.queue] || 'Other'}</span></div>
-    <img class="m-champ" src="${c.icon}" alt="" loading="lazy"/>
-    <div class="m-info">
-      <b>${c.name}</b>
-      <span class="muted">${ROLE_LABEL[r.pos] || ''}</span>
+  const expanded = expandedMatchId === r.id;
+  return `<div class="match-card${expanded ? ' expanded' : ''}" data-mid="${r.id}">
+    <div class="match-row ${r.win ? 'won' : 'lost'}">
+      <div class="m-result">${r.win ? 'WIN' : 'LOSS'}<span class="muted">${QUEUE_NAMES[r.queue] || 'Other'}</span></div>
+      <img class="m-champ" src="${c.icon}" alt="" loading="lazy"/>
+      <div class="m-info">
+        <b>${c.name}</b>
+        <span class="muted">${ROLE_LABEL[r.pos] || ''}</span>
+      </div>
+      <div class="m-kda"><b>${r.k} / ${r.d} / ${r.a}</b><span class="muted">${kdaVal.toFixed(2)} KDA</span></div>
+      <div class="m-items">${items}</div>
+      <div class="m-meta"><span>${mm}m</span><span class="muted">${timeAgo(r.ts)}</span></div>
     </div>
-    <div class="m-kda"><b>${r.k} / ${r.d} / ${r.a}</b><span class="muted">${kdaVal.toFixed(2)} KDA</span></div>
-    <div class="m-items">${items}</div>
-    <div class="m-meta"><span>${mm}m</span><span class="muted">${timeAgo(r.ts)}</span></div>
+    ${expanded ? matchDetail(r) : ''}
   </div>`;
+}
+
+function matchDetail(r) {
+  const mine = myParticipant(r);
+  const rich = r.participants.some(p => p.k !== undefined);
+  const date = new Date(r.ts).toLocaleString();
+  const mm = Math.floor(r.dur / 60), ss = r.dur % 60;
+
+  // my runes: keystone + every selected perk + tree pair
+  let runesHtml = '';
+  if (mine) {
+    const s1 = dd.styles[mine.primaryStyle], s2 = dd.styles[mine.subStyle];
+    const perkImgs = (mine.runes || []).map(id => {
+      const p = dd.perks[id];
+      return p ? `<img src="${p.icon}" title="${p.name}" alt="" loading="lazy"/>` : '';
+    }).join('');
+    if (perkImgs || (s1 && s2)) {
+      runesHtml = `<div class="detail-runes"><span class="muted">Your runes:</span>${perkImgs}
+        ${s1 && s2 ? `<span class="muted">(${s1.name} + ${s2.name})</span>` : ''}</div>`;
+    }
+  }
+
+  const teamTable = (teamId, label) => {
+    const ps = r.participants.filter(p => p.team === teamId);
+    const won = ps[0]?.win;
+    return `<div class="detail-team">
+      <h4 class="${won ? 'team-win' : 'team-loss'}">${label} — ${won ? 'Victory' : 'Defeat'}</h4>
+      <table class="detail-table"><thead><tr>
+        <th>Champion</th><th>Player</th><th>KDA</th><th>CS</th><th>Gold</th><th>Dmg</th><th>Vision</th><th>Items</th>
+      </tr></thead><tbody>
+        ${ps.map(p => participantRow(p, p === mine)).join('')}
+      </tbody></table></div>`;
+  };
+  const enemyTeam = r.myTeam === 100 ? 200 : 100;
+
+  return `<div class="match-detail">
+    <div class="detail-meta">
+      <b>${QUEUE_NAMES[r.queue] || `Queue ${r.queue}`}</b> · ${date} · ${mm}m ${ss}s
+      ${ROLE_LABEL[r.pos] ? ` · played ${ROLE_LABEL[r.pos]}` : ''}
+      ${!rich ? '<div class="insight warn" style="margin-top:8px">Only basic stats are cached for this game — clear cached matches (🔑 settings) and re-analyze to fetch full details.</div>' : ''}
+    </div>
+    ${runesHtml}
+    <div class="detail-teams">
+      ${teamTable(r.myTeam, 'Your team')}
+      ${teamTable(enemyTeam, 'Enemy team')}
+    </div>
+  </div>`;
+}
+
+function participantRow(p, isMe) {
+  const c = champOf(p.champ);
+  const ks = dd.perks[p.keystone];
+  const items = (p.items || []).map(id => {
+    const it = dd.items[id];
+    return it ? `<img src="${it.icon}" title="${it.name}" alt="" loading="lazy"/>` : '';
+  }).join('');
+  const num = v => v !== undefined ? v : '<span class="muted">—</span>';
+  const thousands = v => v !== undefined ? `${(v / 1000).toFixed(1)}k` : '<span class="muted">—</span>';
+  return `<tr class="${isMe ? 'me-row' : ''}">
+    <td><span class="champ-cell small">
+      <img src="${c.icon}" alt="" loading="lazy"/>${ks ? `<img class="ks-icon" src="${ks.icon}" title="${ks.name}" alt=""/>` : ''}${c.name}${p.lvl !== undefined ? ` <span class="muted">lv${p.lvl}</span>` : ''}
+    </span></td>
+    <td class="muted detail-player">${p.name || '—'}</td>
+    <td>${p.k !== undefined ? `<b>${p.k}/${p.d}/${p.a}</b>` : '<span class="muted">—</span>'}</td>
+    <td>${num(p.cs)}</td>
+    <td>${thousands(p.gold)}</td>
+    <td>${thousands(p.dmg)}</td>
+    <td>${num(p.vision)}</td>
+    <td><div class="m-items">${items}</div></td>
+  </tr>`;
 }
 
 // ---------- Counter Finder ----------
@@ -528,28 +655,52 @@ function renderCounterTab() {
 
 // ---------- Champion Pool & nemesis ----------
 function renderPool() {
-  const rows = Object.entries(agg.champStats)
-    .sort((a, b) => b[1].games - a[1].games)
-    .map(([champ, s]) => {
-      const roles = Object.entries(s.roles).sort((a, b) => b[1].games - a[1].games)
-        .map(([r, rs]) => `${ROLE_LABEL[r] || r} ${rs.games}g`).join(', ');
-      let lpCell = '<span class="muted">—</span>';
-      if (s.solo.games > 0) {
-        const lp = (s.solo.wins * 2 - s.solo.games) * LP_PER_GAME;
-        lpCell = `<span class="wr ${lp > 0 ? 'good' : lp < 0 ? 'bad' : 'mid'}">${lp > 0 ? '+' : ''}${lp} LP</span>
-          <span class="muted">(${s.solo.games}g solo)</span>`;
-      }
-      return `<tr>
-        <td>${champCell(champ)}</td>
-        <td>${wrSpan(winrate(s), s.games)}</td>
-        <td>${kda(s).toFixed(2)}</td>
-        <td>${lpCell}</td>
-        <td class="muted">${roles || '—'}</td>
-      </tr>`;
-    }).join('');
+  const data = Object.entries(agg.champStats).map(([champ, s]) => ({
+    champ, s,
+    games: s.games,
+    wr: winrate(s),
+    kdaVal: kda(s),
+    lp: s.solo.games > 0 ? (s.solo.wins * 2 - s.solo.games) * LP_PER_GAME : null,
+  }));
+  data.sort((a, b) => -poolSort.dir * (b[poolSort.key] - a[poolSort.key]) || b.games - a.games);
+
+  const rows = data.map(d => {
+    const { s } = d;
+    const roles = Object.entries(s.roles).sort((a, b) => b[1].games - a[1].games)
+      .map(([r, rs]) => `${ROLE_LABEL[r] || r} ${rs.games}g`).join(', ');
+    let lpCell = '<span class="muted">—</span>';
+    if (d.lp !== null) {
+      lpCell = `<span class="wr ${d.lp > 0 ? 'good' : d.lp < 0 ? 'bad' : 'mid'}">${d.lp > 0 ? '+' : ''}${d.lp} LP</span>
+        <span class="muted">(${s.solo.games}g solo)</span>`;
+    }
+    const expanded = poolExpanded === d.champ;
+    return `<tr class="pool-row${expanded ? ' expanded' : ''}" data-champ="${d.champ}" title="Click for builds & runes">
+      <td>${champCell(d.champ)}</td>
+      <td><b>${d.games}</b></td>
+      <td>${wrSpan(d.wr, null)}</td>
+      <td>${kdaSpan(d.kdaVal)}</td>
+      <td>${lpCell}</td>
+      <td class="muted">${roles || '—'}</td>
+    </tr>` + (expanded ? `<tr class="pool-detail"><td colspan="6">${buildHtml(d.champ)}</td></tr>` : '');
+  }).join('');
+
   $('poolResults').innerHTML =
-    `<table><thead><tr><th>Champion</th><th>Winrate</th><th>KDA</th><th>Est. LP*</th><th>Roles</th></tr></thead><tbody>${rows}</tbody></table>
+    `<table><thead><tr>
+      <th>Champion</th>
+      ${sortTh(poolSort, 'games', 'Games')}
+      ${sortTh(poolSort, 'wr', 'Winrate')}
+      ${sortTh(poolSort, 'kdaVal', 'KDA')}
+      <th>Est. LP*</th><th>Roles</th>
+    </tr></thead><tbody>${rows}</tbody></table>
      <p class="muted" style="margin-top:10px">*Estimated from net Ranked Solo wins × ${LP_PER_GAME} LP — Riot's API doesn't expose actual LP changes per match.</p>`;
+
+  bindSortHeaders($('poolResults'), poolSort, renderPool);
+  $('poolResults').querySelectorAll('tr.pool-row').forEach(tr => {
+    tr.onclick = () => {
+      poolExpanded = poolExpanded === tr.dataset.champ ? null : tr.dataset.champ;
+      renderPool();
+    };
+  });
 
   const nem = Object.entries(agg.vsEnemy)
     .filter(([, s]) => s.games >= 3)
@@ -567,31 +718,55 @@ function renderPool() {
 
 // ---------- Matchups ----------
 function renderMatchups() {
-  const rows = Object.entries(agg.matchups)
-    .sort((a, b) => b[1].games - a[1].games || winrate(b[1]) - winrate(a[1]))
-    .map(([key, s]) => {
-      const [mine, theirs] = key.split('|');
-      return `<tr>
-        <td>${champCell(mine, true)}</td>
-        <td class="muted">vs</td>
-        <td>${champCell(theirs, true)}</td>
-        <td class="muted">${ROLE_LABEL[s.pos] || s.pos}</td>
-        <td>${wrSpan(winrate(s), s.games)}</td>
-      </tr>`;
-    }).join('');
+  if (!agg) return;
+  const q = $('muSearch').value.toLowerCase().trim();
+  const role = $('muRole').value;
+  const minGames = parseInt($('muMinGames').value, 10) || 1;
+
+  const all = Object.entries(agg.matchups).map(([key, s]) => {
+    const [mine, theirs] = key.split('|');
+    return { mine, theirs, s, games: s.games, wr: winrate(s) };
+  });
+  const filtered = all.filter(m =>
+    m.games >= minGames &&
+    (!role || m.s.pos === role) &&
+    (!q || champOf(m.mine).name.toLowerCase().includes(q) || champOf(m.theirs).name.toLowerCase().includes(q)));
+  filtered.sort((a, b) => -muSort.dir * (b[muSort.key] - a[muSort.key]) || b.games - a.games);
+
+  const rows = filtered.map(m => `<tr>
+      <td>${champCell(m.mine, true)}</td>
+      <td class="muted">vs</td>
+      <td>${champCell(m.theirs, true)}</td>
+      <td class="muted">${ROLE_LABEL[m.s.pos] || m.s.pos}</td>
+      <td><b>${m.games}</b></td>
+      <td>${wrSpan(m.wr, null)}</td>
+    </tr>`).join('');
+
   $('matchupResults').innerHTML = rows
-    ? `<table><thead><tr><th>You</th><th></th><th>Lane opponent</th><th>Lane</th><th>Winrate</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<p class="muted">No lane matchup data — positions are only recorded in Summoner\'s Rift games.</p>';
+    ? `<table><thead><tr>
+        <th>You</th><th></th><th>Lane opponent</th><th>Lane</th>
+        ${sortTh(muSort, 'games', 'Games')}
+        ${sortTh(muSort, 'wr', 'Winrate')}
+      </tr></thead><tbody>${rows}</tbody></table>
+      <p class="muted" style="margin-top:10px">${filtered.length} of ${all.length} matchups shown</p>`
+    : all.length
+      ? '<p class="muted">No matchups pass the current filters.</p>'
+      : '<p class="muted">No lane matchup data — positions are only recorded in Summoner\'s Rift games.</p>';
+
+  bindSortHeaders($('matchupResults'), muSort, renderMatchups);
 }
 
 // ---------- Builds & Runes ----------
 function renderBuild(champId) {
+  $('buildResults').innerHTML = buildHtml(champId);
+}
+
+function buildHtml(champId) {
   const b = buildStats(records, champId);
   const c = champOf(champId);
   if (!b.samples) {
-    $('buildResults').innerHTML = `<p class="muted" style="margin-top:12px">
+    return `<p class="muted" style="margin-top:12px">
       No one played <b>${c.name}</b> in the ${records.length} analyzed matches. Analyze more games or pick another champion.</p>`;
-    return;
   }
   const itemHtml = b.items.map(it => {
     const item = dd.items[it.key];
@@ -612,7 +787,7 @@ function renderBuild(champId) {
       <span class="muted">${t.games}g</span></div>` : '';
   }).join('');
 
-  $('buildResults').innerHTML = `<div class="build-card">
+  return `<div class="build-card">
     <div class="champ-cell"><img src="${c.icon}" alt=""/>${c.name}
       <span class="badge blue">${b.samples} games observed</span>
       <span class="badge ${b.sampleWins / b.samples >= 0.5 ? 'gold' : 'grey'}">${Math.round((b.sampleWins / b.samples) * 100)}% won</span>
