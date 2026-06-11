@@ -1,0 +1,41 @@
+{
+  "_comment": "Curated high-winrate / meta picks per role. There is no free public API for global winrates, so this list is maintained by hand — update it each patch from op.gg / u.gg / lolalytics. 'id' must be the Data Dragon champion id (e.g. 'MonkeyKing' for Wukong, 'Chogath' for Cho'Gath).",
+  "updated": "2026-06",
+  "roles": {
+    "TOP": [
+      { "id": "Darius", "why": "Lane bully, snowballs hard, low skill floor for high reward" },
+      { "id": "Sett", "why": "Strong stats, simple kit, great teamfight ult" },
+      { "id": "Malphite", "why": "Easy blind into AD tops, game-changing ult, cheap build" },
+      { "id": "Mordekaiser", "why": "Consistent high winrate, 1v1 machine with ult" },
+      { "id": "Urgot", "why": "Strong all game, executes divers, forgiving" }
+    ],
+    "JUNGLE": [
+      { "id": "Warwick", "why": "High sustain, easy clear, strong early ganks" },
+      { "id": "Amumu", "why": "Simple, huge AoE CC, scales with any comp" },
+      { "id": "Vi", "why": "Reliable point-and-click engage, snowbally" },
+      { "id": "Nocturne", "why": "Map-wide pressure with ult, strong duelist" },
+      { "id": "Zac", "why": "Long-range engage, very tanky, great in teamfights" }
+    ],
+    "MIDDLE": [
+      { "id": "Annie", "why": "Easiest mage, point-and-click burst + AoE stun" },
+      { "id": "Malzahar", "why": "Safe wave-clear, suppression ult shuts down carries" },
+      { "id": "Galio", "why": "Anti-AP, roams with ult, tanky mid" },
+      { "id": "Ahri", "why": "Safe, mobile, always viable pick" },
+      { "id": "Vex", "why": "Anti-mobility kit, strong burst, easy combos" }
+    ],
+    "BOTTOM": [
+      { "id": "Jinx", "why": "Hyper-carry with resets, consistently meta" },
+      { "id": "MissFortune", "why": "Strong lane, easy kit, huge ult" },
+      { "id": "Jhin", "why": "Forgiving spacing, high impact roots and ult" },
+      { "id": "Ashe", "why": "Utility ADC, perma-slow, engage ult" },
+      { "id": "Kaisa", "why": "Flexible builds, scales hard, safe with R" }
+    ],
+    "UTILITY": [
+      { "id": "Leona", "why": "Hard engage, tons of CC, simple gameplan" },
+      { "id": "Lulu", "why": "Top enchanter, protects hyper-carries" },
+      { "id": "Nautilus", "why": "Reliable point-and-click CC, strong roams" },
+      { "id": "Soraka", "why": "Raw healing power, easy to play" },
+      { "id": "Blitzcrank", "why": "One hook can win a game, high pressure" }
+    ]
+  }
+}
