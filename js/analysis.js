@@ -4,6 +4,10 @@
 // Summoner's Rift queues we analyze (positions are only meaningful here)
 export const SR_QUEUES = new Set([400, 420, 430, 440, 490, 700]);
 
+// Bump this whenever extractRecord gains fields: cached records with an older
+// (or missing) version are ignored and refetched, wherever they were cached.
+export const REC_VERSION = 2;
+
 // ---------- Compact record extraction (this is what we cache) ----------
 
 export function extractRecord(match, puuid) {
@@ -25,6 +29,7 @@ export function extractRecord(match, puuid) {
     gold: p.goldEarned,
     dmg: p.totalDamageDealtToChampions,
     vision: p.visionScore,
+    spells: [p.summoner1Id, p.summoner2Id],
     items: [p.item0, p.item1, p.item2, p.item3, p.item4, p.item5].filter(i => i > 0),
     keystone: p.perks?.styles?.[0]?.selections?.[0]?.perk ?? 0,
     primaryStyle: p.perks?.styles?.[0]?.style ?? 0,
@@ -34,13 +39,16 @@ export function extractRecord(match, puuid) {
 
   return {
     id: match.metadata.matchId,
+    rv: REC_VERSION,
     queue: info.queueId,
     ts: info.gameCreation,
     dur: info.gameDuration,
+    ver: (info.gameVersion || '').split('.').slice(0, 2).join('.'), // patch, e.g. "15.11"
     win: me.win,
     champ: me.championName,
     pos: me.teamPosition || '',
     k: me.kills, d: me.deaths, a: me.assists,
+    dk: me.doubleKills, tk: me.tripleKills, qk: me.quadraKills, pk: me.pentaKills,
     myTeam: me.teamId,
     participants,
   };
@@ -60,9 +68,10 @@ export function aggregate(records) {
   for (const r of srRecords) {
     if (r.win) wins++;
 
-    const cs = champStats[r.champ] ??= { games: 0, wins: 0, k: 0, d: 0, a: 0, roles: {}, solo: { games: 0, wins: 0 } };
+    const cs = champStats[r.champ] ??= { games: 0, wins: 0, k: 0, d: 0, a: 0, roles: {}, solo: { games: 0, wins: 0 }, mk: { d: 0, t: 0, q: 0, p: 0 } };
     cs.games++; if (r.win) cs.wins++;
     cs.k += r.k; cs.d += r.d; cs.a += r.a;
+    cs.mk.d += r.dk || 0; cs.mk.t += r.tk || 0; cs.mk.q += r.qk || 0; cs.mk.p += r.pk || 0;
     if (r.queue === 420) { cs.solo.games++; if (r.win) cs.solo.wins++; }
     if (r.pos) {
       const role = cs.roles[r.pos] ??= { games: 0, wins: 0 };

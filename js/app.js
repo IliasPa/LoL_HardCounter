@@ -1,6 +1,6 @@
 import { RiotAPI, RiotAPIError } from './riotApi.js';
 import { loadStaticData, searchChampions } from './ddragon.js';
-import { extractRecord, aggregate, buildStats, winrate, kda, SR_QUEUES } from './analysis.js';
+import { extractRecord, aggregate, buildStats, winrate, kda, SR_QUEUES, REC_VERSION } from './analysis.js';
 import { suggestCounters, metaGaps, teamInsights } from './suggest.js';
 import * as gist from './gist.js';
 import * as store from './store.js';
@@ -25,6 +25,7 @@ let muSort = { key: 'games', dir: -1 };     // matchups sorting
 let expandedMatchId = null;                 // match id expanded in the Profile tab
 let profileShowAll = false;                 // "Show all games" toggled
 let live = null;                            // {game, myTeam, allies:[], enemies:[]} — arrays are user-orderable
+let cancelAnalysis = false;                 // set by the ✕ next to the progress bar
 
 const $ = id => document.getElementById(id);
 
@@ -68,6 +69,7 @@ init();
 function init() {
   const s = store.getSettings();
   if (s.riotId) $('riotId').value = s.riotId;
+  if (s.region) $('region').value = s.region;
   if (s.queueFilter) $('queueFilter').value = s.queueFilter;
   if (s.matchCount) $('matchCount').value = s.matchCount;
   $('apiKey').value = store.getApiKey();
@@ -83,7 +85,8 @@ function init() {
   };
   $('clearCacheBtn').onclick = () => {
     const n = store.clearMatchCache();
-    $('keyStatus').textContent = `Cleared ${n} cached matches from this browser.`;
+    importedCache = {}; // also drop records loaded from gist sync / file imports this session
+    $('keyStatus').textContent = `Cleared ${n} cached matches from this browser (and any synced/imported data in memory). The next Analyze refetches everything from Riot.`;
   };
   $('saveGithubBtn').onclick = saveGithubToken;
   $('exportBtn').onclick = exportData;
@@ -91,6 +94,10 @@ function init() {
   $('importFile').onchange = importData;
   $('analyzeBtn').onclick = analyze;
   $('riotId').addEventListener('keydown', e => { if (e.key === 'Enter') analyze(); });
+  $('progressCancel').onclick = () => {
+    cancelAnalysis = true;
+    $('progressLabel').textContent = 'Stopping…';
+  };
 
   document.querySelectorAll('.tab').forEach(btn => {
     btn.onclick = () => {
@@ -158,7 +165,7 @@ function exportPayload() {
   for (const r of records) merged[r.id] = r;
   return {
     v: 1,
-    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: api?.platform || '' },
+    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: $('region').value },
     savedAt: Date.now(),
     records: Object.values(merged).sort((a, b) => b.ts - a.ts),
   };
@@ -261,12 +268,14 @@ async function analyze() {
     return showError('Set your Riot API key first (🔑 button).');
   }
 
+  const region = $('region').value;
   const queueFilter = $('queueFilter').value;
   const countSetting = $('matchCount').value;
   const maxCount = countSetting === 'all' ? 5000 : parseInt(countSetting, 10);
-  store.saveSettings({ riotId: riotIdRaw, queueFilter, matchCount: countSetting });
+  store.saveSettings({ riotId: riotIdRaw, region, queueFilter, matchCount: countSetting });
 
   $('analyzeBtn').disabled = true;
+  cancelAnalysis = false;
   try {
     setProgress('Loading champion / rune / item data…', 0.02);
     [dd, meta] = await Promise.all([
@@ -274,21 +283,10 @@ async function analyze() {
       meta ? Promise.resolve(meta) : fetch('data/meta.json').then(r => r.json()).catch(() => ({ roles: {} })),
     ]);
 
-    // accounts are global — start on the last known platform (any works) and
-    // detect the real one from the account itself
-    api = new RiotAPI(store.getApiKey(), store.getSettings().region || 'euw1');
+    api = new RiotAPI(store.getApiKey(), region);
 
     setProgress('Finding account…', 0.04);
     account = await api.getAccountByRiotId(m[1].trim(), m[2].trim());
-
-    setProgress('Detecting region…', 0.05);
-    try {
-      const shard = await api.getActiveRegion(account.puuid);
-      if (shard?.region) api.setPlatform(String(shard.region).toLowerCase());
-    } catch (e) {
-      console.warn('Region detection failed, using fallback:', e);
-    }
-    store.saveSettings({ region: api.platform });
 
     setProgress('Fetching rank & profile…', 0.06);
     [summoner, leagueEntries] = await Promise.all([
@@ -318,18 +316,35 @@ async function analyze() {
     const idOpts = queueFilter === 'ranked-solo' ? { queue: 420 }
                  : queueFilter === 'ranked-all' ? { type: 'ranked' }
                  : {};
-    const ids = [];
-    for (let start = 0; start < maxCount; start += 100) {
-      const want = Math.min(100, maxCount - start);
-      const batch = await api.getMatchIds(account.puuid, { ...idOpts, start, count: want });
-      ids.push(...batch);
-      setProgress(`Fetching match list… ${ids.length} found`, 0.1);
-      if (batch.length < want) break;
+    const fetchIds = async () => {
+      const out = [];
+      for (let start = 0; start < maxCount; start += 100) {
+        if (cancelAnalysis) break;
+        const want = Math.min(100, maxCount - start);
+        const batch = await api.getMatchIds(account.puuid, { ...idOpts, start, count: want });
+        out.push(...batch);
+        setProgress(`Fetching match list… ${out.length} found`, 0.1);
+        if (batch.length < want) break;
+      }
+      return out;
+    };
+
+    const ids = await fetchIds();
+    if (!ids.length) {
+      // distinguish "wrong filter" from "no games in this region"
+      const any = cancelAnalysis ? [] : await api.getMatchIds(account.puuid, { start: 0, count: 1 }).catch(() => []);
+      throw new Error(any.length
+        ? 'This account has matches, but none pass the chosen queue filter — switch the dropdown to "All SR games" and try again.'
+        : 'No matches found for this account in this region — check the region dropdown.');
     }
-    if (!ids.length) throw new Error('No matches found for this account with the chosen filter.');
 
     const mem = importedCache[account.puuid] || {};
-    const cached = id => mem[id] || store.getCachedRecord(account.puuid, id);
+    // a cached record only counts if it has the current schema — older ones
+    // (from localStorage, gist sync or file import) are refetched with full stats
+    const cached = id => {
+      const rec = mem[id] || store.getCachedRecord(account.puuid, id);
+      return rec && rec.rv === REC_VERSION ? rec : null;
+    };
     const uncachedTotal = ids.filter(id => !cached(id)).length;
 
     records = [];
@@ -339,6 +354,7 @@ async function analyze() {
       const id = ids[i];
       let rec = cached(id);
       if (!rec) {
+        if (cancelAnalysis) break; // stop hitting the API — analyze what we have
         const match = await api.getMatch(id);
         rec = extractRecord(match, account.puuid);
         if (rec) store.cacheRecord(account.puuid, id, rec);
@@ -360,7 +376,11 @@ async function analyze() {
     }
 
     agg = aggregate(records);
-    if (!agg.totalGames) throw new Error('No Summoner\'s Rift games found in this range — ARAM/Arena are not analyzed. Try "All SR games" or more matches.');
+    if (!agg.totalGames) {
+      throw new Error(cancelAnalysis
+        ? 'Analysis stopped before any games were loaded.'
+        : 'No Summoner\'s Rift games found in this range — ARAM/Arena are not analyzed. Try "All SR games" or more matches.');
+    }
 
     renderAll();
     hideProgress();
@@ -400,6 +420,7 @@ function renderAll() {
   renderProfile();
   renderNemesis();
   renderMatchups();
+  renderClimb();
   $('liveResults').innerHTML = '';
 }
 
@@ -525,13 +546,16 @@ function renderMatchList() {
   }
 }
 
-// ---------- Per-player rank lookup (league-v4, cached per session) ----------
-const rankCache = new Map();   // puuid -> league entry | null
+// ---------- Per-player lookups (league, mastery — cached per session) ----------
+const rankCache = new Map();      // puuid -> league entry | null
 const rankPending = new Set();
+const masteryCache = new Map();   // puuid -> top mastery entries
+const masteryPending = new Set();
+const scoutCache = new Map();     // puuid -> { form: [{win, champ}] } latest first
 
-async function loadRanks(r) {
+async function ensureRanks(participants, onDone) {
   if (!api) return;
-  const need = r.participants.filter(p => p.puuid && !rankCache.has(p.puuid) && !rankPending.has(p.puuid));
+  const need = participants.filter(p => p.puuid && !rankCache.has(p.puuid) && !rankPending.has(p.puuid));
   if (!need.length) return;
   need.forEach(p => rankPending.add(p.puuid));
   await Promise.all(need.map(async p => {
@@ -546,7 +570,28 @@ async function loadRanks(r) {
       rankPending.delete(p.puuid);
     }
   }));
-  if (expandedMatchId === r.id) renderMatchList(); // fill the badges in
+  onDone();
+}
+
+async function ensureMasteries(participants, onDone) {
+  if (!api) return;
+  const need = participants.filter(p => p.puuid && !masteryCache.has(p.puuid) && !masteryPending.has(p.puuid));
+  if (!need.length) return;
+  need.forEach(p => masteryPending.add(p.puuid));
+  await Promise.all(need.map(async p => {
+    try {
+      masteryCache.set(p.puuid, await api.getTopMasteries(p.puuid, 5));
+    } catch {
+      masteryCache.set(p.puuid, []);
+    } finally {
+      masteryPending.delete(p.puuid);
+    }
+  }));
+  onDone();
+}
+
+function loadRanks(r) {
+  ensureRanks(r.participants, () => { if (expandedMatchId === r.id) renderMatchList(); });
 }
 
 const TIER_ABBR = {
@@ -572,6 +617,25 @@ function myParticipant(r) {
       || r.participants.find(p => p.team === r.myTeam && p.champ === r.champ);
 }
 
+function spellStack(p, cls = 'm-spells') {
+  const imgs = (p?.spells || []).map(id => {
+    const s = dd.spells[id];
+    return s ? `<img src="${s.icon}" title="${s.name}" alt="" loading="lazy"/>` : '';
+  }).join('');
+  return imgs ? `<span class="${cls}">${imgs}</span>` : '';
+}
+
+// keystone with the secondary rune tree as a small circle overlapping its right side
+function runeStack(p) {
+  const ks = dd.perks[p?.keystone];
+  if (!ks) return '';
+  const sub = dd.styles[p.subStyle];
+  return `<span class="rune-wrap">
+    <img class="rune-primary" src="${ks.icon}" title="${ks.name}" alt="" loading="lazy"/>
+    ${sub ? `<img class="rune-sub" src="${sub.icon}" title="${sub.name}" alt="" loading="lazy"/>` : ''}
+  </span>`;
+}
+
 function matchCard(r) {
   const c = champOf(r.champ);
   const mine = myParticipant(r);
@@ -586,6 +650,8 @@ function matchCard(r) {
     <div class="match-row ${r.win ? 'won' : 'lost'}">
       <div class="m-result">${r.win ? 'WIN' : 'LOSS'}<span class="muted">${QUEUE_NAMES[r.queue] || 'Other'}</span></div>
       <img class="m-champ" src="${c.icon}" alt="" loading="lazy"/>
+      ${spellStack(mine)}
+      ${runeStack(mine)}
       <div class="m-info">
         <b>${c.name}</b>
         <span>${roleIcon(r.pos)}</span>
@@ -646,7 +712,6 @@ function matchDetail(r) {
 
 function participantRow(p, isMe, dur, maxDmg) {
   const c = champOf(p.champ);
-  const ks = dd.perks[p.keystone];
   const items = (p.items || []).map(id => {
     const it = dd.items[id];
     return it ? `<img src="${it.icon}" title="${it.name}" alt="" loading="lazy"/>` : '';
@@ -675,7 +740,7 @@ function participantRow(p, isMe, dur, maxDmg) {
 
   return `<tr class="${isMe ? 'me-row' : ''}">
     <td><span class="champ-cell small detail-champ">
-      <span class="champ-icon-wrap"><img src="${c.icon}" alt="" loading="lazy"/>${p.lvl !== undefined ? `<span class="lvl-corner">${p.lvl}</span>` : ''}</span>${ks ? `<img class="ks-icon" src="${ks.icon}" title="${ks.name}" alt=""/>` : ''}${c.name}
+      <span class="champ-icon-wrap"><img src="${c.icon}" alt="" loading="lazy"/>${p.lvl !== undefined ? `<span class="lvl-corner">${p.lvl}</span>` : ''}</span>${spellStack(p, 'detail-spells')}${runeStack(p)}${c.name}
     </span></td>
     <td class="muted detail-player"><div>${p.name || '—'}</div>${rankBadge(p)}</td>
     <td class="kda-cell">${kdaCell}</td>
@@ -768,6 +833,7 @@ function renderPool() {
     games: s.games,
     wr: winrate(s),
     kdaVal: kda(s),
+    mkScore: s.mk ? s.mk.d + s.mk.t * 3 + s.mk.q * 10 + s.mk.p * 40 : 0,
     score: scores[champ]?.score ?? 0,
     sugg: scores[champ],
   })).filter(d =>
@@ -778,7 +844,17 @@ function renderPool() {
 
   const shown = poolShowAll ? data : data.slice(0, POOL_LIMIT);
   const bestScore = showEvidence && data.length ? Math.max(...data.map(d => d.score)) : null;
-  const colSpan = showEvidence ? 7 : 6;
+  // only show the multikill column when there is at least one multikill recorded
+  const showMk = data.some(d => d.mkScore > 0);
+  const colSpan = 6 + (showEvidence ? 1 : 0) + (showMk ? 1 : 0);
+
+  // compressed double/triple/quadra/penta cell, e.g. "9·3·1·1" with the big ones highlighted
+  const mkCell = mk => {
+    if (!mk || (!mk.d && !mk.t && !mk.q && !mk.p)) return '<span class="muted">—</span>';
+    return `<span class="mk-cell" title="${mk.d} double · ${mk.t} triple · ${mk.q} quadra · ${mk.p} penta">
+      <span class="${mk.d ? '' : 'muted'}">${mk.d}</span>·<span class="${mk.t ? '' : 'muted'}">${mk.t}</span>·<span class="${mk.q ? 'mk-quadra' : 'muted'}">${mk.q}</span>·<span class="${mk.p ? 'mk-penta' : 'muted'}">${mk.p}</span>
+    </span>`;
+  };
 
   const rows = shown.map(d => {
     const { s } = d;
@@ -798,6 +874,7 @@ function renderPool() {
       <td><b>${d.games}</b></td>
       <td>${wrSpan(d.wr, null)}</td>
       <td>${kdaSpan(d.kdaVal)}</td>
+      ${showMk ? `<td>${mkCell(d.s.mk)}</td>` : ''}
       <td class="muted">${roles || '—'}</td>
     </tr>` + (expanded ? `<tr class="pool-detail"><td colspan="${colSpan}">${buildHtml(d.champ)}</td></tr>` : '');
   }).join('');
@@ -811,6 +888,7 @@ function renderPool() {
       ${sortTh(poolSort, 'games', 'Games')}
       ${sortTh(poolSort, 'wr', 'Winrate')}
       ${sortTh(poolSort, 'kdaVal', 'KDA')}
+      ${showMk ? sortTh(poolSort, 'mkScore', '2·3·4·5×', 'Double · Triple · Quadra · Penta kills') : ''}
       <th>Roles</th>
     </tr></thead><tbody>${rows}</tbody></table>` +
     (data.length > POOL_LIMIT
@@ -885,6 +963,159 @@ function renderMatchups() {
   bindSortHeaders($('matchupResults'), muSort, renderMatchups);
 }
 
+// ---------- Climb tab : trends, schedule, tilt, patches ----------
+function renderClimb() {
+  if (!agg) return;
+  const games = records.filter(r => SR_QUEUES.has(r.queue)).sort((a, b) => a.ts - b.ts);
+  $('climbResults').innerHTML = `
+    <div class="panel"><h2>📈 Winrate trend</h2>${trendChart(games)}</div>
+    <div class="panel"><h2>🕐 When you win</h2>
+      <p class="muted">Winrate by weekday and time of day — schedule your ranked sessions when you actually win.</p>
+      ${whenHtml(games)}</div>
+    <div class="panel"><h2>🧠 Tilt check</h2>${tiltHtml(games)}</div>
+    <div class="panel"><h2>🩹 Winrate by patch</h2>${patchHtml(games)}</div>`;
+}
+
+function trendChart(games) {
+  const W = 10; // rolling window
+  if (games.length < W + 2) return '<p class="muted">Not enough games for a trend — analyze at least 12.</p>';
+  const pts = [];
+  let wins = 0;
+  for (let i = 0; i < games.length; i++) {
+    wins += games[i].win ? 1 : 0;
+    if (i >= W) wins -= games[i - W].win ? 1 : 0;
+    if (i >= W - 1) pts.push(wins / W);
+  }
+  const w = 600, h = 150, pad = 8;
+  const x = i => pad + i * (w - 2 * pad) / Math.max(pts.length - 1, 1);
+  const y = v => h - pad - v * (h - 2 * pad);
+  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  return `<svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line x1="0" y1="${y(0.5).toFixed(1)}" x2="${w}" y2="${y(0.5).toFixed(1)}" class="trend-base"/>
+      <polyline points="${line}" class="trend-line"/>
+      <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(last).toFixed(1)}" r="4" class="trend-dot"/>
+    </svg>
+    <div class="muted" style="margin-top:6px">Rolling ${W}-game winrate across your last ${games.length} SR games
+      (oldest → newest, dashed line = 50%). Right now: <b class="wr ${last >= 0.55 ? 'good' : last <= 0.45 ? 'bad' : 'mid'}">${Math.round(last * 100)}%</b>.</div>`;
+}
+
+function climbRow(label, s) {
+  if (!s.games) return `<div class="clb-row"><span class="clb-label">${label}</span><span class="muted">no games</span></div>`;
+  const wr = s.wins / s.games;
+  const cls = wr >= 0.55 ? 'good' : wr <= 0.45 ? 'bad' : 'mid';
+  return `<div class="clb-row">
+    <span class="clb-label">${label}</span>
+    <span class="clb-bar"><i class="${cls}" style="width:${Math.round(wr * 100)}%"></i></span>
+    <span class="wr ${cls}">${Math.round(wr * 100)}%</span>
+    <span class="muted">(${s.games}g)</span>
+  </div>`;
+}
+
+function whenHtml(games) {
+  const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const days = DAYS.map(() => ({ games: 0, wins: 0 }));
+  const TODS = [['🌅 Morning (6–12)', 6, 12], ['☀️ Afternoon (12–18)', 12, 18], ['🌆 Evening (18–24)', 18, 24], ['🌙 Night (0–6)', 0, 6]];
+  const tods = TODS.map(() => ({ games: 0, wins: 0 }));
+  for (const g of games) {
+    const dt = new Date(g.ts);
+    const d = days[(dt.getDay() + 6) % 7]; // 0=Mon
+    d.games++; if (g.win) d.wins++;
+    const h = dt.getHours();
+    const ti = TODS.findIndex(([, from, to]) => h >= from && h < to);
+    if (ti >= 0) { tods[ti].games++; if (g.win) tods[ti].wins++; }
+  }
+  return `<div class="clb-cols">
+    <div>${DAYS.map((d, i) => climbRow(d, days[i])).join('')}</div>
+    <div>${TODS.map(([label], i) => climbRow(label, tods[i])).join('')}</div>
+  </div>`;
+}
+
+function tiltHtml(games) {
+  if (games.length < 10) return '<p class="muted">Not enough games yet.</p>';
+  // sessions = games separated by less than an hour of downtime
+  const sessions = [];
+  let cur = [];
+  for (const g of games) {
+    const prev = cur[cur.length - 1];
+    if (prev && g.ts - (prev.ts + prev.dur * 1000) > 3600e3) { sessions.push(cur); cur = []; }
+    cur.push(g);
+  }
+  if (cur.length) sessions.push(cur);
+
+  const afterWin = { games: 0, wins: 0 }, afterLoss = { games: 0, wins: 0 }, after2 = { games: 0, wins: 0 };
+  const early = { games: 0, wins: 0 }, late = { games: 0, wins: 0 };
+  for (const s of sessions) {
+    s.forEach((g, i) => {
+      const slot = i < 3 ? early : late;
+      slot.games++; if (g.win) slot.wins++;
+      if (i >= 1) { const b = s[i - 1].win ? afterWin : afterLoss; b.games++; if (g.win) b.wins++; }
+      if (i >= 2 && !s[i - 1].win && !s[i - 2].win) { after2.games++; if (g.win) after2.wins++; }
+    });
+  }
+  let streak = 0, bestW = 0, bestL = 0;
+  for (const g of games) {
+    streak = g.win ? Math.max(streak, 0) + 1 : Math.min(streak, 0) - 1;
+    bestW = Math.max(bestW, streak); bestL = Math.min(bestL, streak);
+  }
+
+  const pct = s => Math.round((s.wins / s.games) * 100);
+  const insights = [];
+  if (afterWin.games >= 5 && afterLoss.games >= 5) {
+    const diff = afterWin.wins / afterWin.games - afterLoss.wins / afterLoss.games;
+    if (diff >= 0.08) {
+      insights.push(`<div class="insight warn"><b>You tilt.</b> In the same session you win <b>${pct(afterLoss)}%</b> right after a loss
+        vs <b>${pct(afterWin)}%</b> after a win (${afterLoss.games}g / ${afterWin.games}g). Take a 5-minute break after every loss before queueing again.</div>`);
+    } else {
+      insights.push(`<div class="insight ok"><b>No tilt detected</b> — your winrate after a loss (${pct(afterLoss)}%) is about the same as after a win (${pct(afterWin)}%). Keep doing what you're doing.</div>`);
+    }
+  }
+  if (after2.games >= 3 && after2.wins / after2.games <= 0.45) {
+    insights.push(`<div class="insight warn"><b>Stop after two losses.</b> When you queue up anyway, you win only
+      <b>${pct(after2)}%</b> of those games (${after2.games}g). Two losses in a row = log off, you're statistically donating LP.</div>`);
+  }
+  if (early.games >= 8 && late.games >= 8) {
+    const d = early.wins / early.games - late.wins / late.games;
+    if (d >= 0.08) {
+      insights.push(`<div class="insight warn"><b>Long sessions hurt you.</b> Games 1–3 of a session: <b>${pct(early)}%</b> winrate.
+        Game 4 and beyond: <b>${pct(late)}%</b>. Cap your sessions at three games.</div>`);
+    } else if (d <= -0.08) {
+      insights.push(`<div class="insight ok"><b>You warm up slowly</b> — you win more from game 4 onward (${pct(late)}%) than in your first three (${pct(early)}%). Consider a norms warm-up game first.</div>`);
+    }
+  }
+  if (!insights.length) insights.push('<p class="muted">Nothing alarming found — need more games in the analyzed window for stronger conclusions.</p>');
+
+  return `${insights.join('')}
+    <div class="clb-stats">
+      ${afterWin.games ? climbRow('After a win', afterWin) : ''}
+      ${afterLoss.games ? climbRow('After a loss', afterLoss) : ''}
+      ${after2.games ? climbRow('After 2+ losses', after2) : ''}
+      ${climbRow('Session games 1–3', early)}
+      ${climbRow('Session games 4+', late)}
+    </div>
+    <p class="muted" style="margin-top:10px">${sessions.length} sessions detected (new session after a 1h+ break).
+      Longest win streak <b class="wr good">${bestW}</b> · longest loss streak <b class="wr bad">${-bestL}</b>.</p>`;
+}
+
+function patchHtml(games) {
+  const byPatch = {};
+  let missing = 0;
+  for (const g of games) {
+    if (!g.ver) { missing++; continue; }
+    const p = byPatch[g.ver] ??= { games: 0, wins: 0 };
+    p.games++; if (g.win) p.wins++;
+  }
+  const patches = Object.entries(byPatch).sort((a, b) => {
+    const [a1, a2] = a[0].split('.').map(Number), [b1, b2] = b[0].split('.').map(Number);
+    return b1 - a1 || b2 - a2;
+  });
+  if (!patches.length) {
+    return '<p class="muted">No patch info in the cached data — clear cached matches (🔑 settings) and re-analyze once to record patch versions.</p>';
+  }
+  return patches.map(([ver, s]) => climbRow(`Patch ${ver}`, s)).join('') +
+    (missing ? `<p class="muted" style="margin-top:8px">${missing} older cached games have no patch info — clear cached matches and re-analyze to include them.</p>` : '');
+}
+
 // ---------- Builds & Runes ----------
 function buildHtml(champId) {
   const b = buildStats(records, champId);
@@ -950,6 +1181,10 @@ async function checkLiveGame() {
       enemies: game.participants.filter(p => p.teamId !== myTeam),
     };
     renderLiveGame();
+    // scout the lobby in the background: ranks + champion mastery for all ten players
+    const rerender = () => { if (live?.game === game) renderLiveGame(); };
+    ensureRanks(game.participants, rerender);
+    ensureMasteries(game.participants, rerender);
   } catch (e) {
     $('liveResults').innerHTML = '';
     showError(e instanceof RiotAPIError ? e.message : (e.message || String(e)));
@@ -1006,8 +1241,9 @@ function renderLiveGame() {
     return `<div class="team-row${isMe ? ' me' : ''}${side === 'enemies' && i === myIdx && isSR ? ' my-lane' : ''}">
       ${arrows}${lane}${c ? `<img src="${c.icon}" alt=""/>` : ''}<b>${c?.name || '?'}</b>
       <span class="muted live-player">${isMe ? 'you' : (name !== c?.name ? name : '')}</span>
+      ${rankBadge(p)}
       <span class="vs-note">${rates.join('')}</span>
-    </div>`;
+    </div>${isMe ? '' : scoutLine(p)}`;
   };
 
   // grouped, plain-language insights
@@ -1033,6 +1269,7 @@ function renderLiveGame() {
       <div class="team-box ally"><h3>Your team</h3>${allies.map((p, i) => teamRow(p, i, allies, 'allies')).join('')}</div>
       <div class="team-box enemy"><h3>Enemy team</h3>${enemies.map((p, i) => teamRow(p, i, enemies, 'enemies')).join('')}</div>
     </div>
+    ${deepScoutButton()}
     <div class="panel" style="margin-top:16px"><h2>Insights</h2>${insightHtml || '<p class="muted">Not enough data.</p>'}</div>`;
 
   $('liveResults').querySelectorAll('.order-btn').forEach(btn => {
@@ -1043,6 +1280,85 @@ function renderLiveGame() {
       renderLiveGame();
     };
   });
+  const dsBtn = $('deepScoutBtn');
+  if (dsBtn) dsBtn.onclick = deepScout;
+}
+
+// ---------- Live scouting (mastery mains + recent form) ----------
+let scouting = false;
+let scoutProgress = '';
+
+function fmtPts(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`;
+}
+
+function scoutLine(p) {
+  const bits = [];
+  const top = masteryCache.get(p.puuid);
+  if (top?.length) {
+    const mains = top.slice(0, 3).map(m => {
+      const ch = dd.byKey[m.championId];
+      return ch ? `<img class="scout-main${m.championId === p.championId ? ' cur' : ''}" src="${ch.icon}"
+        title="${ch.name} — ${fmtPts(m.championPoints)} mastery" alt=""/>` : '';
+    }).join('');
+    bits.push(`<span class="scout-bit"><span class="muted">mains</span> ${mains}</span>`);
+    const cur = top.find(m => m.championId === p.championId);
+    bits.push(cur
+      ? `<span class="scout-bit"><b>${fmtPts(cur.championPoints)}</b> <span class="muted">on this champ</span></span>`
+      : `<span class="scout-bit muted">champ not in their top 5</span>`);
+  }
+  const sc = scoutCache.get(p.puuid);
+  if (sc?.form.length) {
+    const w = sc.form.filter(f => f.win).length;
+    const dots = sc.form.map(f =>
+      `<i class="form-dot ${f.win ? 'w' : 'l'}" title="${champOf(f.champ).name} — ${f.win ? 'win' : 'loss'}"></i>`).join('');
+    let streak = 0;
+    for (const f of sc.form) { if (f.win === sc.form[0].win) streak++; else break; }
+    bits.push(`<span class="scout-bit">${dots} ${w}W-${sc.form.length - w}L` +
+      (streak >= 3 ? ` <b class="wr ${sc.form[0].win ? 'good' : 'bad'}">${streak}${sc.form[0].win ? 'W' : 'L'} streak</b>` : '') + '</span>');
+    const curId = dd.byKey[p.championId]?.id;
+    const onChamp = sc.form.filter(f => f.champ === curId).length;
+    bits.push(onChamp === 0
+      ? `<span class="scout-bit wr bad">⚠ 0 games on this champ in their last ${sc.form.length}</span>`
+      : `<span class="scout-bit"><span class="muted">this champ</span> ${onChamp}/${sc.form.length} recent</span>`);
+  }
+  return bits.length ? `<div class="scout-line">${bits.join('')}</div>` : '';
+}
+
+function deepScoutButton() {
+  if (!live) return '';
+  const left = live.enemies.filter(p => p.puuid && !scoutCache.has(p.puuid)).length;
+  if (!left && !scouting) return '';
+  return `<button id="deepScoutBtn" class="btn ghost" style="margin-top:12px" ${scouting ? 'disabled' : ''}>
+    ${scouting ? `🔍 ${scoutProgress}` : `🔍 Deep scout enemies — last 8 games each (~1 min on a dev key)`}</button>`;
+}
+
+async function deepScout() {
+  if (!live || scouting) return;
+  scouting = true;
+  const targets = live.enemies.filter(p => p.puuid && !scoutCache.has(p.puuid));
+  try {
+    for (let t = 0; t < targets.length; t++) {
+      const p = targets[t];
+      scoutProgress = `Scouting ${dd.byKey[p.championId]?.name || 'enemy'} (${t + 1}/${targets.length})…`;
+      if (live) renderLiveGame();
+      let ids = await api.getMatchIds(p.puuid, { count: 8, type: 'ranked' }).catch(() => []);
+      if (!ids.length) ids = await api.getMatchIds(p.puuid, { count: 8 }).catch(() => []);
+      const form = [];
+      for (const id of ids) {
+        try {
+          const match = await api.getMatch(id);
+          const mp = match.info.participants.find(x => x.puuid === p.puuid);
+          if (mp) form.push({ win: mp.win, champ: mp.championName });
+        } catch { /* skip this match */ }
+      }
+      scoutCache.set(p.puuid, { form });
+    }
+  } finally {
+    scouting = false;
+    scoutProgress = '';
+    if (live) renderLiveGame();
+  }
 }
 
 // "Where to focus" — personal history vs this exact lobby

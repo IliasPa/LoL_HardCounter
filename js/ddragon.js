@@ -9,10 +9,11 @@ export async function loadStaticData() {
   const versions = await (await fetch(`${DD}/api/versions.json`)).json();
   const v = versions[0];
 
-  const [champJson, runesJson, itemJson] = await Promise.all([
+  const [champJson, runesJson, itemJson, spellJson] = await Promise.all([
     fetch(`${DD}/cdn/${v}/data/en_US/champion.json`).then(r => r.json()),
     fetch(`${DD}/cdn/${v}/data/en_US/runesReforged.json`).then(r => r.json()),
     fetch(`${DD}/cdn/${v}/data/en_US/item.json`).then(r => r.json()),
+    fetch(`${DD}/cdn/${v}/data/en_US/summoner.json`).then(r => r.json()),
   ]);
 
   // Champions: index by ddragon id ("MonkeyKing"), numeric key (62) and display name ("Wukong")
@@ -53,7 +54,13 @@ export async function loadStaticData() {
     };
   }
 
-  cache = { version: v, byId, byKey, byName, perks, styles, items };
+  // Summoner spells: numeric key (match-v5 summoner1Id) -> {name, icon}
+  const spells = {};
+  for (const s of Object.values(spellJson.data)) {
+    spells[parseInt(s.key, 10)] = { name: s.name, icon: `${DD}/cdn/${v}/img/spell/${s.image.full}` };
+  }
+
+  cache = { version: v, byId, byKey, byName, perks, styles, items, spells };
   return cache;
 }
 

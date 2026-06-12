@@ -12,6 +12,25 @@
     <div class="brand">⚔️ LoL <span>HardCounter</span></div>
     <div class="account-form">
       <input id="riotId" type="text" placeholder="Riot ID (e.g. Faker#KR1)" autocomplete="off" />
+      <select id="region" title="Platform region">
+        <option value="euw1">EUW</option>
+        <option value="eun1">EUNE</option>
+        <option value="na1">NA</option>
+        <option value="kr">KR</option>
+        <option value="br1">BR</option>
+        <option value="jp1">JP</option>
+        <option value="la1">LAN</option>
+        <option value="la2">LAS</option>
+        <option value="oc1">OCE</option>
+        <option value="tr1">TR</option>
+        <option value="ru">RU</option>
+        <option value="me1">ME</option>
+        <option value="sg2">SG</option>
+        <option value="tw2">TW</option>
+        <option value="vn2">VN</option>
+        <option value="ph2">PH</option>
+        <option value="th2">TH</option>
+      </select>
       <select id="queueFilter" title="Which games to analyze">
         <option value="ranked-solo">Ranked Solo</option>
         <option value="ranked-all" selected>Ranked Solo+Flex</option>
@@ -73,7 +92,10 @@
 
   <div id="progress" class="progress hidden">
     <div class="progress-label" id="progressLabel">Loading…</div>
-    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-row">
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <button id="progressCancel" class="progress-cancel" title="Stop fetching — analyze what's loaded so far">✕</button>
+    </div>
   </div>
 
   <div id="error" class="error hidden"></div>
@@ -85,6 +107,7 @@
       <button class="tab active" data-tab="profile">👤 Profile</button>
       <button class="tab" data-tab="counter">🏆 Champion Pool</button>
       <button class="tab" data-tab="matchups">⚔️ Matchups</button>
+      <button class="tab" data-tab="climb">📈 Climb</button>
       <button class="tab" data-tab="live">📡 Live Game</button>
     </nav>
 
@@ -131,6 +154,11 @@
       <div id="profileResults"></div>
     </section>
 
+    <!-- CLIMB : trends, schedule, tilt, patches -->
+    <section id="tab-climb" class="tab-content hidden">
+      <div id="climbResults"></div>
+    </section>
+
     <!-- LIVE GAME -->
     <section id="tab-live" class="tab-content hidden">
       <div class="panel">
@@ -164,7 +192,7 @@
 
   <div id="welcome" class="welcome">
     <h1>⚔️ LoL HardCounter</h1>
-    <p>Enter your <b>Riot ID</b> (name#tag) and hit <b>Analyze</b> — your region is detected automatically.</p>
+    <p>Enter your <b>Riot ID</b> (name#tag), pick your region and hit <b>Analyze</b>.</p>
     <p>It studies your match history and tells you <b>what to pick against whom</b> — based on
     <em>your own</em> winrates, not just global stats. Plus builds, runes, live-game scouting and
     team-comp insights.</p>

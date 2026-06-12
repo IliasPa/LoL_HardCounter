@@ -111,9 +111,23 @@ input:focus, select:focus { border-color: var(--gold); }
 /* ---------- Progress / error ---------- */
 .progress { max-width: 900px; margin: 20px auto; padding: 0 20px; }
 .progress-label { margin-bottom: 6px; color: var(--muted); font-size: 0.9em; }
+.progress-row { display: flex; align-items: center; gap: 10px; }
 .progress-track {
+  flex: 1;
   height: 8px; border-radius: 4px; background: var(--panel); overflow: hidden;
 }
+.progress-cancel {
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 0.8em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.progress-cancel:hover { color: var(--loss); border-color: var(--loss); }
 .progress-fill {
   height: 100%; width: 0%;
   background: linear-gradient(90deg, var(--blue), var(--gold));
@@ -495,7 +509,10 @@ tr.pool-detail .build-card { margin-top: 12px; }
   line-height: 1.5;
   color: var(--gold-bright);
 }
-.detail-table .champ-cell img.ks-icon { width: 22px; height: 22px; border: none; border-radius: 50%; background: #00000040; }
+.detail-table .rune-wrap { width: 26px; height: 26px; }
+.detail-table .rune-wrap img { border: none; }
+.detail-table .rune-wrap .rune-primary { width: 24px; height: 24px; }
+.detail-table .rune-wrap .rune-sub { width: 14px; height: 14px; right: -4px; border: 1px solid var(--border); }
 .detail-table .m-items { display: flex; gap: 3px; }
 .detail-table .m-items img { width: 22px; height: 22px; }
 .detail-table tr.me-row td { background: #c8aa6e18; }
@@ -523,6 +540,73 @@ tr.pool-detail .build-card { margin-top: 12px; }
   .detail-table .detail-player { display: none; }
   .detail-table th:nth-child(2) { display: none; }
 }
+
+/* ---------- Match card loadout (spells + runes) ---------- */
+.m-spells { display: flex; flex-direction: column; gap: 2px; }
+.m-spells img { width: 19px; height: 19px; border-radius: 4px; border: 1px solid #00000060; display: block; }
+.rune-wrap { position: relative; display: inline-block; width: 30px; height: 30px; flex-shrink: 0; }
+.rune-wrap .rune-primary {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: #00000060;
+  display: block;
+}
+.rune-wrap .rune-sub {
+  position: absolute;
+  right: -5px; bottom: -2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #0a1020;
+  border: 1px solid var(--border);
+  padding: 1px;
+}
+.detail-spells { display: inline-flex; flex-direction: column; gap: 2px; }
+.detail-spells img { width: 17px !important; height: 17px !important; border-radius: 4px; }
+
+/* ---------- Champion pool multikills ---------- */
+.mk-cell { white-space: nowrap; font-weight: 600; }
+.mk-quadra { color: var(--blue); font-weight: 700; }
+.mk-penta { color: var(--gold); font-weight: 800; }
+
+/* ---------- Climb tab ---------- */
+.trend-svg { width: 100%; height: 150px; display: block; background: #00000025; border-radius: 10px; }
+.trend-line { fill: none; stroke: var(--gold); stroke-width: 2.5; stroke-linejoin: round; }
+.trend-base { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 5; opacity: 0.5; }
+.trend-dot { fill: var(--gold-bright); }
+
+.clb-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
+@media (max-width: 700px) { .clb-cols { grid-template-columns: 1fr; } }
+.clb-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 0.93em; }
+.clb-label { min-width: 150px; color: var(--text); }
+.clb-bar {
+  flex: 1; max-width: 180px; height: 8px;
+  background: #00000050; border-radius: 4px; overflow: hidden;
+}
+.clb-bar i { display: block; height: 100%; }
+.clb-bar i.good { background: var(--win); }
+.clb-bar i.mid { background: var(--warn); }
+.clb-bar i.bad { background: var(--loss); }
+.clb-stats { margin-top: 12px; }
+
+/* ---------- Live scouting ---------- */
+.team-row .rank-line { margin-top: 0; flex-shrink: 0; }
+.scout-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
+  margin: -2px 4px 6px 28px;
+  padding: 4px 8px;
+  font-size: 0.82em;
+  background: #00000025;
+  border-radius: 6px;
+}
+.scout-bit { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.scout-main { width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--border); vertical-align: middle; }
+.scout-main.cur { border-color: var(--gold); box-shadow: 0 0 5px #c8aa6e60; }
+.form-dot {
+  display: inline-block; width: 9px; height: 9px;
+  border-radius: 50%; margin-right: 2px;
+}
+.form-dot.w { background: var(--win); }
+.form-dot.l { background: var(--loss); }
 
 .footer {
   text-align: center;

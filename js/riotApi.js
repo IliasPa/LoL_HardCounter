@@ -18,13 +18,9 @@ export class RiotAPIError extends Error {
 export class RiotAPI {
   constructor(apiKey, platform) {
     this.apiKey = apiKey.trim();
-    this.setPlatform(platform);
-    this.timestamps = []; // request times for rate limiting
-  }
-
-  setPlatform(platform) {
     this.platform = platform;
     this.regional = PLATFORM_TO_REGIONAL[platform] || 'europe';
+    this.timestamps = []; // request times for rate limiting
   }
 
   async throttle() {
@@ -83,14 +79,9 @@ export class RiotAPI {
         `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
       );
     } catch (e) {
-      if (e.status === 404) throw new RiotAPIError(404, `Account "${gameName}#${tagLine}" not found. Check the spelling (Name#TAG).`);
+      if (e.status === 404) throw new RiotAPIError(404, `Account "${gameName}#${tagLine}" not found in this region group. Check the spelling and the region.`);
       throw e;
     }
-  }
-
-  // Which platform (euw1, na1…) this account plays LoL on — accounts are global, this is not.
-  getActiveRegion(puuid) {
-    return this.regionalReq(`/riot/account/v1/region/by-game/lol/by-puuid/${puuid}`);
   }
 
   // --- Match history ---
@@ -113,6 +104,11 @@ export class RiotAPI {
   // --- Ranked info ---
   getLeagueEntries(puuid) {
     return this.platformReq(`/lol/league/v4/entries/by-puuid/${puuid}`);
+  }
+
+  // --- Champion mastery ---
+  getTopMasteries(puuid, count = 5) {
+    return this.platformReq(`/lol/champion-mastery/v4/champion-masteries/by-puuid/${puuid}/top?count=${count}`);
   }
 
   // --- Live game ---
