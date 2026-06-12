@@ -33,7 +33,34 @@ const QUEUE_NAMES = {
   490: 'Quickplay', 450: 'ARAM', 700: 'Clash', 1700: 'Arena', 1900: 'URF',
 };
 const ROLE_LABEL = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
+const ROLE_SLUG = { TOP: 'top', JUNGLE: 'jungle', MIDDLE: 'middle', BOTTOM: 'bottom', UTILITY: 'utility' };
+const ROLE_ICON_BASE = 'https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/';
 const POOL_LIMIT = 10; // pool rows shown before "Show all"
+
+function roleIconUrl(role) {
+  return ROLE_SLUG[role] ? `${ROLE_ICON_BASE}icon-position-${ROLE_SLUG[role]}.png` : '';
+}
+
+function roleIcon(role) {
+  const url = roleIconUrl(role);
+  return url ? `<img class="role-icon" src="${url}" alt="${ROLE_LABEL[role]}" title="${ROLE_LABEL[role]}" loading="lazy"/>` : '';
+}
+
+// inline icon button group replacing the old role <select>; value lives in dataset.value
+function buildRolePicker(el, onChange) {
+  el.innerHTML = ['', ...Object.keys(ROLE_SLUG)].map(r => `
+    <button type="button" class="role-btn${(el.dataset.value || '') === r ? ' active' : ''}" data-role="${r}"
+      title="${r ? ROLE_LABEL[r] : 'Any role'}">
+      ${r ? `<img src="${roleIconUrl(r)}" alt="${ROLE_LABEL[r]}"/>` : 'ALL'}
+    </button>`).join('');
+  el.querySelectorAll('.role-btn').forEach(b => b.onclick = () => {
+    el.dataset.value = b.dataset.role;
+    el.querySelectorAll('.role-btn').forEach(x => x.classList.toggle('active', x === b));
+    onChange();
+  });
+}
+
+const roleVal = id => $(id).dataset.value || '';
 
 // ---------- Boot ----------
 init();
@@ -41,7 +68,6 @@ init();
 function init() {
   const s = store.getSettings();
   if (s.riotId) $('riotId').value = s.riotId;
-  if (s.region) $('region').value = s.region;
   if (s.queueFilter) $('queueFilter').value = s.queueFilter;
   if (s.matchCount) $('matchCount').value = s.matchCount;
   $('apiKey').value = store.getApiKey();
@@ -76,12 +102,12 @@ function init() {
 
   setupChampSearch($('enemySearch'), $('enemySuggest'), c => { addEnemy(c.id); $('enemySearch').value = ''; });
   $('clearEnemiesBtn').onclick = () => { enemyPicks = []; renderCounterTab(); };
-  $('myRole').onchange = renderCounterTab;
+  buildRolePicker($('myRole'), renderCounterTab);
   $('poolMinGames').onchange = renderPool;
   $('liveBtn').onclick = checkLiveGame;
 
   $('muSearch').oninput = renderMatchups;
-  $('muRole').onchange = renderMatchups;
+  buildRolePicker($('muRole'), renderMatchups);
   $('muMinGames').onchange = renderMatchups;
 }
 
@@ -132,7 +158,7 @@ function exportPayload() {
   for (const r of records) merged[r.id] = r;
   return {
     v: 1,
-    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: $('region').value },
+    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: api?.platform || '' },
     savedAt: Date.now(),
     records: Object.values(merged).sort((a, b) => b.ts - a.ts),
   };
@@ -235,11 +261,10 @@ async function analyze() {
     return showError('Set your Riot API key first (🔑 button).');
   }
 
-  const region = $('region').value;
   const queueFilter = $('queueFilter').value;
   const countSetting = $('matchCount').value;
   const maxCount = countSetting === 'all' ? 5000 : parseInt(countSetting, 10);
-  store.saveSettings({ riotId: riotIdRaw, region, queueFilter, matchCount: countSetting });
+  store.saveSettings({ riotId: riotIdRaw, queueFilter, matchCount: countSetting });
 
   $('analyzeBtn').disabled = true;
   try {
@@ -249,10 +274,21 @@ async function analyze() {
       meta ? Promise.resolve(meta) : fetch('data/meta.json').then(r => r.json()).catch(() => ({ roles: {} })),
     ]);
 
-    api = new RiotAPI(store.getApiKey(), region);
+    // accounts are global — start on the last known platform (any works) and
+    // detect the real one from the account itself
+    api = new RiotAPI(store.getApiKey(), store.getSettings().region || 'euw1');
 
     setProgress('Finding account…', 0.04);
     account = await api.getAccountByRiotId(m[1].trim(), m[2].trim());
+
+    setProgress('Detecting region…', 0.05);
+    try {
+      const shard = await api.getActiveRegion(account.puuid);
+      if (shard?.region) api.setPlatform(String(shard.region).toLowerCase());
+    } catch (e) {
+      console.warn('Region detection failed, using fallback:', e);
+    }
+    store.saveSettings({ region: api.platform });
 
     setProgress('Fetching rank & profile…', 0.06);
     [summoner, leagueEntries] = await Promise.all([
@@ -367,18 +403,64 @@ function renderAll() {
   $('liveResults').innerHTML = '';
 }
 
-// ---------- Summary ----------
+// ---------- Summary (account header — merged with the old Profile header card) ----------
 function renderSummary() {
+  const v = dd.version;
+  const iconUrl = summoner?.profileIconId != null
+    ? `https://ddragon.leagueoflegends.com/cdn/${v}/img/profileicon/${summoner.profileIconId}.png` : '';
+
   const wr = agg.totalWins / agg.totalGames;
+  const wrCls = wr >= 0.52 ? 'good' : wr <= 0.48 ? 'bad' : 'mid';
   const mains = Object.entries(agg.champStats).sort((a, b) => b[1].games - a[1].games).slice(0, 3);
+
+  // most played role across all analyzed games
+  const roleCount = {};
+  for (const cs of Object.values(agg.champStats)) {
+    for (const [r, rs] of Object.entries(cs.roles)) roleCount[r] = (roleCount[r] || 0) + rs.games;
+  }
+  const topRole = Object.entries(roleCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const rankCard = (label, entry) => {
+    if (!entry) return `<div class="rank-card unranked">
+      <div class="rank-crest">—</div>
+      <div><div class="rank-queue">${label}</div><div class="rank-tier muted">Unranked</div></div></div>`;
+    const games = entry.wins + entry.losses;
+    const rwr = games ? entry.wins / games : 0;
+    const t = entry.tier.charAt(0) + entry.tier.slice(1).toLowerCase();
+    return `<div class="rank-card">
+      <img class="rank-crest" src="${crestUrl(entry.tier)}" alt="${t}"/>
+      <div>
+        <div class="rank-queue">${label}</div>
+        <div class="rank-tier">${t} ${entry.rank} · <b>${entry.leaguePoints} LP</b></div>
+        <div class="rank-wl"><span class="wr ${rwr >= 0.52 ? 'good' : rwr <= 0.48 ? 'bad' : 'mid'}">${Math.round(rwr * 100)}%</span>
+          <span class="muted">${entry.wins}W ${entry.losses}L</span></div>
+      </div></div>`;
+  };
   const solo = leagueEntries.find(e => e.queueType === 'RANKED_SOLO_5x5');
+  const flex = leagueEntries.find(e => e.queueType === 'RANKED_FLEX_SR');
+
   $('summaryCard').innerHTML = `
-    <div class="big">${account.gameName}<span class="muted">#${account.tagLine}</span></div>
-    ${solo ? `<div class="stat">${tierBadge(solo)}</div>` : ''}
-    <div class="stat">SR games analyzed: <b>${agg.totalGames}</b></div>
-    <div class="stat">Winrate: <b>${Math.round(wr * 100)}%</b></div>
-    <div class="stat">Most played: ${mains.map(([c, s]) => `<b>${champOf(c).name}</b> (${s.games})`).join(' · ')}</div>
-    <div class="stat" id="syncStatus"></div>
+    ${iconUrl ? `<div class="profile-icon-wrap">
+      <img class="profile-icon" src="${iconUrl}" alt=""/>
+      ${summoner?.summonerLevel != null ? `<span class="lvl-badge">${summoner.summonerLevel}</span>` : ''}
+    </div>` : ''}
+    <div class="summary-main">
+      <div class="big">${account.gameName}<span class="muted">#${account.tagLine}</span></div>
+      <div class="summary-sub">
+        <span class="wr ${wrCls}">${Math.round(wr * 100)}%</span><span class="muted">winrate</span>
+        <span class="sub-sep">·</span>
+        ${mains.map(([c]) => {
+          const ch = champOf(c);
+          return `<img class="champ-mini" src="${ch.icon}" alt="${ch.name}" title="${ch.name} — ${agg.champStats[c].games} games"/>`;
+        }).join('')}
+        ${topRole ? `<span class="sub-sep">·</span>${roleIcon(topRole)}` : ''}
+      </div>
+      <div class="stat" id="syncStatus"></div>
+    </div>
+    <div class="rank-cards">
+      ${rankCard('Ranked Solo/Duo', solo)}
+      ${rankCard('Ranked Flex', flex)}
+    </div>
   `;
 }
 
@@ -386,54 +468,14 @@ function crestUrl(tier) {
   return `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-mini-crests/${tier.toLowerCase()}.svg`;
 }
 
-function tierBadge(entry) {
-  const t = entry.tier.charAt(0) + entry.tier.slice(1).toLowerCase();
-  return `<img class="crest-mini" src="${crestUrl(entry.tier)}" alt=""/> <b>${t} ${entry.rank}</b> · ${entry.leaguePoints} LP`;
-}
-
 // ---------- Profile tab ----------
 function renderProfile() {
-  const v = dd.version;
-  const iconUrl = summoner?.profileIconId != null
-    ? `https://ddragon.leagueoflegends.com/cdn/${v}/img/profileicon/${summoner.profileIconId}.png` : '';
-
-  const rankCard = (label, entry) => {
-    if (!entry) return `<div class="rank-card unranked">
-      <div class="rank-crest">—</div>
-      <div><div class="rank-queue">${label}</div><div class="rank-tier muted">Unranked</div></div></div>`;
-    const games = entry.wins + entry.losses;
-    const wr = games ? entry.wins / games : 0;
-    const t = entry.tier.charAt(0) + entry.tier.slice(1).toLowerCase();
-    return `<div class="rank-card">
-      <img class="rank-crest" src="${crestUrl(entry.tier)}" alt="${t}"/>
-      <div>
-        <div class="rank-queue">${label}</div>
-        <div class="rank-tier">${t} ${entry.rank} · <b>${entry.leaguePoints} LP</b></div>
-        <div class="rank-wl"><span class="wr ${wr >= 0.52 ? 'good' : wr <= 0.48 ? 'bad' : 'mid'}">${Math.round(wr * 100)}%</span>
-          <span class="muted">${entry.wins}W ${entry.losses}L</span></div>
-      </div></div>`;
-  };
-
-  const solo = leagueEntries.find(e => e.queueType === 'RANKED_SOLO_5x5');
-  const flex = leagueEntries.find(e => e.queueType === 'RANKED_FLEX_SR');
-
   const recent = [...records].sort((a, b) => b.ts - a.ts);
   const last20 = recent.slice(0, 20);
   const wins20 = last20.filter(r => r.win).length;
   const k = last20.reduce((s, r) => s + r.k, 0), d = last20.reduce((s, r) => s + r.d, 0), a = last20.reduce((s, r) => s + r.a, 0);
 
   $('profileResults').innerHTML = `
-    <div class="panel profile-header">
-      ${iconUrl ? `<img class="profile-icon" src="${iconUrl}" alt=""/>` : ''}
-      <div>
-        <h2>${account.gameName} <span class="muted">#${account.tagLine}</span></h2>
-        ${summoner ? `<div class="muted">Level ${summoner.summonerLevel}</div>` : ''}
-      </div>
-      <div class="rank-cards">
-        ${rankCard('Ranked Solo/Duo', solo)}
-        ${rankCard('Ranked Flex', flex)}
-      </div>
-    </div>
     <div class="panel">
       <h2>Recent games <span class="muted" style="font-weight:400;font-size:0.75em">
         last ${last20.length}: ${wins20}W ${last20.length - wins20}L (${last20.length ? Math.round(wins20 / last20.length * 100) : 0}%)
@@ -546,7 +588,7 @@ function matchCard(r) {
       <img class="m-champ" src="${c.icon}" alt="" loading="lazy"/>
       <div class="m-info">
         <b>${c.name}</b>
-        <span class="muted">${ROLE_LABEL[r.pos] || ''}</span>
+        <span>${roleIcon(r.pos)}</span>
       </div>
       <div class="m-kda"><b>${r.k} / ${r.d} / ${r.a}</b><span class="muted">${kdaVal.toFixed(2)} KDA</span></div>
       <div class="m-items">${items}</div>
@@ -577,30 +619,28 @@ function matchDetail(r) {
   }
 
   const maxDmg = Math.max(...r.participants.map(p => p.dmg || 0), 1);
-  const teamTable = (teamId, label) => {
+  // one shared table for both teams so all columns stay aligned
+  const teamRows = (teamId, label) => {
     const ps = r.participants.filter(p => p.team === teamId);
     const won = ps[0]?.win;
-    return `<div class="detail-team">
-      <h4 class="${won ? 'team-win' : 'team-loss'}">${label} — ${won ? 'Victory' : 'Defeat'}</h4>
-      <table class="detail-table"><thead><tr>
-        <th>Champion</th><th>Player</th><th>KDA</th><th>CS</th><th>Gold</th><th>Dmg</th><th>Vision</th><th>Items</th>
-      </tr></thead><tbody>
-        ${ps.map(p => participantRow(p, p === mine, r.dur, maxDmg)).join('')}
-      </tbody></table></div>`;
+    return `<tr class="team-head"><td colspan="8" class="${won ? 'team-win' : 'team-loss'}">${label} — ${won ? 'Victory' : 'Defeat'}</td></tr>
+      ${ps.map(p => participantRow(p, p === mine, r.dur, maxDmg)).join('')}`;
   };
   const enemyTeam = r.myTeam === 100 ? 200 : 100;
 
   return `<div class="match-detail">
     <div class="detail-meta">
       <b>${QUEUE_NAMES[r.queue] || `Queue ${r.queue}`}</b> · ${date} · ${mm}m ${ss}s
-      ${ROLE_LABEL[r.pos] ? ` · played ${ROLE_LABEL[r.pos]}` : ''}
+      ${r.pos ? ` · ${roleIcon(r.pos)}` : ''}
       ${!rich ? '<div class="insight warn" style="margin-top:8px">Only basic stats are cached for this game — clear cached matches (🔑 settings) and re-analyze to fetch full details.</div>' : ''}
     </div>
     ${runesHtml}
-    <div class="detail-teams">
-      ${teamTable(r.myTeam, 'Your team')}
-      ${teamTable(enemyTeam, 'Enemy team')}
-    </div>
+    <table class="detail-table"><thead><tr>
+      <th>Champion</th><th>Player</th><th>KDA</th><th>CS</th><th>Gold</th><th>Dmg</th><th>Vision</th><th>Items</th>
+    </tr></thead><tbody>
+      ${teamRows(r.myTeam, 'Your team')}
+      ${teamRows(enemyTeam, 'Enemy team')}
+    </tbody></table>
   </div>`;
 }
 
@@ -634,8 +674,8 @@ function participantRow(p, isMe, dur, maxDmg) {
     : dash;
 
   return `<tr class="${isMe ? 'me-row' : ''}">
-    <td><span class="champ-cell small">
-      <img src="${c.icon}" alt="" loading="lazy"/>${ks ? `<img class="ks-icon" src="${ks.icon}" title="${ks.name}" alt=""/>` : ''}${c.name}${p.lvl !== undefined ? ` <span class="muted">lv${p.lvl}</span>` : ''}
+    <td><span class="champ-cell small detail-champ">
+      <span class="champ-icon-wrap"><img src="${c.icon}" alt="" loading="lazy"/>${p.lvl !== undefined ? `<span class="lvl-corner">${p.lvl}</span>` : ''}</span>${ks ? `<img class="ks-icon" src="${ks.icon}" title="${ks.name}" alt=""/>` : ''}${c.name}
     </span></td>
     <td class="muted detail-player"><div>${p.name || '—'}</div>${rankBadge(p)}</td>
     <td class="kda-cell">${kdaCell}</td>
@@ -684,7 +724,7 @@ function addEnemy(champId) {
 
 function renderCounterTab() {
   if (!agg) return;
-  const role = $('myRole').value;
+  const role = roleVal('myRole');
 
   $('enemyChips').innerHTML = enemyPicks.map(id => {
     const c = champOf(id);
@@ -705,7 +745,7 @@ function renderCounterTab() {
     : `<table><thead><tr><th>Champion</th><th>Role</th><th>Why it's strong</th><th>Your games</th></tr></thead><tbody>` +
       gaps.map(g => `<tr>
         <td>${champCell(g.id)}</td>
-        <td>${ROLE_LABEL[g.role] || g.role}</td>
+        <td>${roleIcon(g.role) || g.role}</td>
         <td class="muted">${g.why}</td>
         <td>${g.playedGames === 0 ? '<span class="badge gold">NEW</span>' : `${g.playedGames}g`}</td>
       </tr>`).join('') + '</tbody></table>';
@@ -714,7 +754,7 @@ function renderCounterTab() {
 // ---------- Champion Pool (merged with Counter Finder) & nemesis ----------
 function renderPool() {
   if (!agg) return;
-  const role = $('myRole').value;
+  const role = roleVal('myRole');
   const minGames = parseInt($('poolMinGames').value, 10) || 1;
   const taken = new Set(enemyPicks.map(x => x.toLowerCase()));
   const showEvidence = enemyPicks.length > 0;
@@ -743,7 +783,7 @@ function renderPool() {
   const rows = shown.map(d => {
     const { s } = d;
     const roles = Object.entries(s.roles).sort((a, b) => b[1].games - a[1].games)
-      .map(([r, rs]) => `${ROLE_LABEL[r] || r} ${rs.games}g`).join(', ');
+      .map(([r, rs]) => `<span class="role-stat">${roleIcon(r) || r}${rs.games}g</span>`).join('');
     const scoreCell = `<span class="wr ${d.score >= 0.55 ? 'good' : d.score <= 0.45 ? 'bad' : 'mid'}">
       ${d.score === bestScore ? '⭐ ' : ''}${Math.round(d.score * 100)}</span>` +
       (d.sugg?.evidenceGames ? ` <span class="badge blue">${d.sugg.evidenceGames}g vs picks</span>` : '');
@@ -809,7 +849,7 @@ function renderNemesis() {
 function renderMatchups() {
   if (!agg) return;
   const q = $('muSearch').value.toLowerCase().trim();
-  const role = $('muRole').value;
+  const role = roleVal('muRole');
   const minGames = parseInt($('muMinGames').value, 10) || 1;
 
   const all = Object.entries(agg.matchups).map(([key, s]) => {
@@ -826,7 +866,7 @@ function renderMatchups() {
       <td>${champCell(m.mine, true)}</td>
       <td class="muted">vs</td>
       <td>${champCell(m.theirs, true)}</td>
-      <td class="muted">${ROLE_LABEL[m.s.pos] || m.s.pos}</td>
+      <td>${roleIcon(m.s.pos) || m.s.pos}</td>
       <td><b>${m.games}</b></td>
       <td>${wrSpan(m.wr, null)}</td>
     </tr>`).join('');

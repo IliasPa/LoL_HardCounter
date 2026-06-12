@@ -12,25 +12,6 @@
     <div class="brand">⚔️ LoL <span>HardCounter</span></div>
     <div class="account-form">
       <input id="riotId" type="text" placeholder="Riot ID (e.g. Faker#KR1)" autocomplete="off" />
-      <select id="region" title="Platform region">
-        <option value="euw1">EUW</option>
-        <option value="eun1">EUNE</option>
-        <option value="na1">NA</option>
-        <option value="kr">KR</option>
-        <option value="br1">BR</option>
-        <option value="jp1">JP</option>
-        <option value="la1">LAN</option>
-        <option value="la2">LAS</option>
-        <option value="oc1">OCE</option>
-        <option value="tr1">TR</option>
-        <option value="ru">RU</option>
-        <option value="me1">ME</option>
-        <option value="sg2">SG</option>
-        <option value="tw2">TW</option>
-        <option value="vn2">VN</option>
-        <option value="ph2">PH</option>
-        <option value="th2">TH</option>
-      </select>
       <select id="queueFilter" title="Which games to analyze">
         <option value="ranked-solo">Ranked Solo</option>
         <option value="ranked-all" selected>Ranked Solo+Flex</option>
@@ -119,14 +100,7 @@
             <input id="enemySearch" type="text" placeholder="Add enemy champion…" autocomplete="off" />
             <div id="enemySuggest" class="champ-suggest hidden"></div>
           </div>
-          <select id="myRole" title="Your role — boosts score and filters the table">
-            <option value="">Any role</option>
-            <option value="TOP">Top</option>
-            <option value="JUNGLE">Jungle</option>
-            <option value="MIDDLE">Mid</option>
-            <option value="BOTTOM">ADC</option>
-            <option value="UTILITY">Support</option>
-          </select>
+          <div id="myRole" class="role-picker" title="Your role — boosts score and filters the table"></div>
           <select id="poolMinGames" title="Minimum games on the champion">
             <option value="1">≥ 1 game</option>
             <option value="2">≥ 2 games</option>
@@ -175,14 +149,7 @@
         <p class="muted">Direct lane opponents only (same position, opposite team). Click a column header to sort.</p>
         <div class="filter-row">
           <input id="muSearch" type="text" placeholder="Filter by champion (yours or theirs)…" autocomplete="off" />
-          <select id="muRole" title="Filter by lane">
-            <option value="">All lanes</option>
-            <option value="TOP">Top</option>
-            <option value="JUNGLE">Jungle</option>
-            <option value="MIDDLE">Mid</option>
-            <option value="BOTTOM">ADC</option>
-            <option value="UTILITY">Support</option>
-          </select>
+          <div id="muRole" class="role-picker" title="Filter by lane"></div>
           <select id="muMinGames" title="Minimum games">
             <option value="1">≥ 1 game</option>
             <option value="2">≥ 2 games</option>
@@ -197,7 +164,7 @@
 
   <div id="welcome" class="welcome">
     <h1>⚔️ LoL HardCounter</h1>
-    <p>Enter your <b>Riot ID</b> (name#tag), pick your region and hit <b>Analyze</b>.</p>
+    <p>Enter your <b>Riot ID</b> (name#tag) and hit <b>Analyze</b> — your region is detected automatically.</p>
     <p>It studies your match history and tells you <b>what to pick against whom</b> — based on
     <em>your own</em> winrates, not just global stats. Plus builds, runes, live-game scouting and
     team-comp insights.</p>
