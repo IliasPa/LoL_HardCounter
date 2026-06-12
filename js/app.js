@@ -1,7 +1,7 @@
 import { RiotAPI, RiotAPIError } from './riotApi.js';
 import { loadStaticData, searchChampions } from './ddragon.js';
 import { extractRecord, aggregate, buildStats, winrate, kda, SR_QUEUES } from './analysis.js';
-import { suggestCounters, metaGaps, teamNeeds } from './suggest.js';
+import { suggestCounters, metaGaps, teamInsights } from './suggest.js';
 import * as gist from './gist.js';
 import * as store from './store.js';
 
@@ -23,6 +23,7 @@ let poolExpanded = null;                    // champ id whose builds are expande
 let muSort = { key: 'games', dir: -1 };     // matchups sorting
 let expandedMatchId = null;                 // match id expanded in the Profile tab
 let profileShowAll = false;                 // "Show all games" toggled
+let live = null;                            // {game, myTeam, allies:[], enemies:[]} — arrays are user-orderable
 
 const $ = id => document.getElementById(id);
 
@@ -76,6 +77,7 @@ function init() {
   setupChampSearch($('buildSearch'), $('buildSuggest'), c => { $('buildSearch').value = c.name; renderBuild(c.id); });
   $('clearEnemiesBtn').onclick = () => { enemyPicks = []; renderCounterTab(); };
   $('myRole').onchange = renderCounterTab;
+  $('poolMinGames').onchange = renderPool;
   $('liveBtn').onclick = checkLiveGame;
 
   $('muSearch').oninput = renderMatchups;
@@ -355,10 +357,11 @@ function renderAll() {
   expandedMatchId = null;
   poolExpanded = null;
   profileShowAll = false;
+  live = null;
   renderSummary();
   renderCounterTab();
   renderProfile();
-  renderPool();
+  renderNemesis();
   renderMatchups();
   $('buildResults').innerHTML = '';
   $('liveResults').innerHTML = '';
@@ -591,6 +594,7 @@ function setupChampSearch(input, box, onPick) {
 function addEnemy(champId) {
   if (!enemyPicks.includes(champId) && enemyPicks.length < 5) {
     enemyPicks.push(champId);
+    poolSort = { key: 'score', dir: -1 }; // re-rank the pool against the new pick
     renderCounterTab();
   }
 }
@@ -608,39 +612,10 @@ function renderCounterTab() {
     b.onclick = () => { enemyPicks = enemyPicks.filter(x => x !== b.dataset.id); renderCounterTab(); };
   });
 
-  // never suggest a champion that's already picked by the enemy
+  renderPool();
+
+  // Meta gaps (excluding enemy picks)
   const taken = new Set(enemyPicks.map(x => x.toLowerCase()));
-  const suggestions = suggestCounters(agg, enemyPicks, role)
-    .filter(s => !taken.has(s.champ.toLowerCase()))
-    .slice(0, 8);
-
-  $('counterResults').innerHTML = !suggestions.length
-    ? '<p class="muted">Not enough data yet — analyze more games.</p>'
-    : suggestions.map((s, i) => {
-        const c = champOf(s.champ);
-        const evidence = s.notes.length
-          ? s.notes.join(' · ')
-          : enemyPicks.length
-            ? 'No history vs these enemies — score is your comfort on this champ'
-            : 'Ranked by your overall performance';
-        const roleNote = s.roleFit ? ` · ${s.roleFit.wins}-${s.roleFit.games - s.roleFit.wins} as ${ROLE_LABEL[role]}` : '';
-        return `<div class="suggestion${i === 0 ? ' top-pick' : ''}">
-          <img class="portrait" src="${c.icon}" alt=""/>
-          <div class="sugg-body">
-            <div class="sugg-name">${i === 0 ? '⭐ ' : ''}${c.name}
-              <span class="badge grey">${s.games} games</span>
-              ${s.evidenceGames ? `<span class="badge blue">${s.evidenceGames}g vs picks</span>` : ''}
-            </div>
-            <div class="sugg-detail">${evidence}${roleNote}</div>
-          </div>
-          <div class="sugg-score">
-            <div class="pct wr ${s.score >= 0.55 ? 'good' : s.score <= 0.45 ? 'bad' : 'mid'}">${Math.round(s.score * 100)}</div>
-            <div class="muted">pick score</div>
-          </div>
-        </div>`;
-      }).join('');
-
-  // Meta gaps (also excluding enemy picks)
   const gaps = metaGaps(meta, agg, role).filter(g => !taken.has(g.id.toLowerCase())).slice(0, 10);
   $('metaResults').innerHTML = !gaps.length
     ? '<p class="muted">Nothing to suggest — you already play the meta picks for this role. 💪</p>'
@@ -653,16 +628,34 @@ function renderCounterTab() {
       </tr>`).join('') + '</tbody></table>';
 }
 
-// ---------- Champion Pool & nemesis ----------
+// ---------- Champion Pool (merged with Counter Finder) & nemesis ----------
 function renderPool() {
+  if (!agg) return;
+  const role = $('myRole').value;
+  const minGames = parseInt($('poolMinGames').value, 10) || 1;
+  const taken = new Set(enemyPicks.map(x => x.toLowerCase()));
+  const showEvidence = enemyPicks.length > 0;
+
+  // pick scores from the counter engine (your winrate vs the picked enemies + comfort)
+  const scores = {};
+  for (const s of suggestCounters(agg, enemyPicks, role)) scores[s.champ] = s;
+
   const data = Object.entries(agg.champStats).map(([champ, s]) => ({
     champ, s,
     games: s.games,
     wr: winrate(s),
     kdaVal: kda(s),
     lp: s.solo.games > 0 ? (s.solo.wins * 2 - s.solo.games) * LP_PER_GAME : null,
-  }));
+    score: scores[champ]?.score ?? 0,
+    sugg: scores[champ],
+  })).filter(d =>
+    d.games >= minGames &&
+    (!role || d.s.roles[role]?.games) &&
+    !taken.has(d.champ.toLowerCase()));
   data.sort((a, b) => -poolSort.dir * (b[poolSort.key] - a[poolSort.key]) || b.games - a.games);
+
+  const bestScore = showEvidence && data.length ? Math.max(...data.map(d => d.score)) : null;
+  const colSpan = showEvidence ? 8 : 7;
 
   const rows = data.map(d => {
     const { s } = d;
@@ -673,20 +666,31 @@ function renderPool() {
       lpCell = `<span class="wr ${d.lp > 0 ? 'good' : d.lp < 0 ? 'bad' : 'mid'}">${d.lp > 0 ? '+' : ''}${d.lp} LP</span>
         <span class="muted">(${s.solo.games}g solo)</span>`;
     }
+    const scoreCell = `<span class="wr ${d.score >= 0.55 ? 'good' : d.score <= 0.45 ? 'bad' : 'mid'}">
+      ${d.score === bestScore ? '⭐ ' : ''}${Math.round(d.score * 100)}</span>` +
+      (d.sugg?.evidenceGames ? ` <span class="badge blue">${d.sugg.evidenceGames}g vs picks</span>` : '');
+    const evidenceCell = showEvidence
+      ? `<td class="muted evidence-cell">${d.sugg?.notes?.length ? d.sugg.notes.join(' · ') : 'no history vs picks — comfort only'}</td>`
+      : '';
     const expanded = poolExpanded === d.champ;
     return `<tr class="pool-row${expanded ? ' expanded' : ''}" data-champ="${d.champ}" title="Click for builds & runes">
       <td>${champCell(d.champ)}</td>
+      <td>${scoreCell}</td>
+      ${evidenceCell}
       <td><b>${d.games}</b></td>
       <td>${wrSpan(d.wr, null)}</td>
       <td>${kdaSpan(d.kdaVal)}</td>
       <td>${lpCell}</td>
       <td class="muted">${roles || '—'}</td>
-    </tr>` + (expanded ? `<tr class="pool-detail"><td colspan="6">${buildHtml(d.champ)}</td></tr>` : '');
+    </tr>` + (expanded ? `<tr class="pool-detail"><td colspan="${colSpan}">${buildHtml(d.champ)}</td></tr>` : '');
   }).join('');
 
-  $('poolResults').innerHTML =
-    `<table><thead><tr>
+  $('poolResults').innerHTML = !data.length
+    ? '<p class="muted">No champions pass the current filters — analyze more games or relax the filters.</p>'
+    : `<table><thead><tr>
       <th>Champion</th>
+      ${sortTh(poolSort, 'score', 'Pick score', 'Your winrate vs the picked enemies blended with your comfort on the champ')}
+      ${showEvidence ? '<th>Evidence vs picks</th>' : ''}
       ${sortTh(poolSort, 'games', 'Games')}
       ${sortTh(poolSort, 'wr', 'Winrate')}
       ${sortTh(poolSort, 'kdaVal', 'KDA')}
@@ -701,6 +705,9 @@ function renderPool() {
       renderPool();
     };
   });
+}
+
+function renderNemesis() {
 
   const nem = Object.entries(agg.vsEnemy)
     .filter(([, s]) => s.games >= 3)
@@ -800,6 +807,8 @@ function buildHtml(champId) {
 }
 
 // ---------- Live game ----------
+const LANE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY'];
+
 async function checkLiveGame() {
   if (!api || !account) return showError('Analyze your account first.');
   hideError();
@@ -808,6 +817,7 @@ async function checkLiveGame() {
   try {
     const game = await api.getActiveGame(account.puuid);
     if (!game) {
+      live = null;
       $('liveResults').innerHTML = `<div class="insight warn" style="margin-top:14px">
         Not in a live game right now. The spectator API only works once the game has <b>started</b> —
         during champ select, use the 🎯 Counter Finder tab instead.</div>`;
@@ -815,42 +825,127 @@ async function checkLiveGame() {
     }
     const me = game.participants.find(p => p.puuid === account.puuid);
     const myTeam = me ? me.teamId : 100;
-    const allies = game.participants.filter(p => p.teamId === myTeam);
-    const enemies = game.participants.filter(p => p.teamId !== myTeam);
-    const allyChampObjs = allies.map(p => dd.byKey[p.championId]).filter(Boolean);
-
-    const teamRow = p => {
-      const c = dd.byKey[p.championId];
-      const name = p.riotId || c?.name || '?';
-      let note = '';
-      if (c && p.teamId !== myTeam) {
-        const v = agg.vsEnemy[c.id];
-        if (v && v.games >= 2) {
-          const wr = Math.round(winrate(v) * 100);
-          note = `<span class="vs-note">you win <b class="wr ${wr >= 55 ? 'good' : wr <= 45 ? 'bad' : 'mid'}">${wr}%</b> vs (${v.games}g)</span>`;
-        }
-      }
-      return `<div class="team-row">${c ? `<img src="${c.icon}" alt=""/>` : ''}<b>${c?.name || '?'}</b>
-        <span class="muted">${name !== c?.name ? name : ''}</span>${note}</div>`;
+    live = {
+      game,
+      myTeam,
+      allies: game.participants.filter(p => p.teamId === myTeam),
+      enemies: game.participants.filter(p => p.teamId !== myTeam),
     };
-
-    const insights = teamNeeds(allyChampObjs);
-    const queueNote = QUEUE_NAMES[game.gameQueueConfigId] || `Queue ${game.gameQueueConfigId}`;
-    const mins = Math.floor((game.gameLength > 0 ? game.gameLength : 0) / 60);
-
-    $('liveResults').innerHTML = `
-      <div class="insight" style="margin-top:14px">🟢 <b>Live game found</b> — ${queueNote}, ~${mins} min in.</div>
-      <div class="live-teams">
-        <div class="team-box ally"><h3>Your team</h3>${allies.map(teamRow).join('')}</div>
-        <div class="team-box enemy"><h3>Enemy team</h3>${enemies.map(teamRow).join('')}</div>
-      </div>
-      <div class="panel" style="margin-top:16px"><h2>Team composition insights</h2>
-        ${insights.map(i => `<div class="insight ${i.type === 'warn' ? 'warn' : ''}">${i.text}</div>`).join('')}
-      </div>`;
+    renderLiveGame();
   } catch (e) {
     $('liveResults').innerHTML = '';
     showError(e instanceof RiotAPIError ? e.message : (e.message || String(e)));
   } finally {
     $('liveBtn').disabled = false;
   }
+}
+
+function liveRate(label, wr, games) {
+  const pct = Math.round(wr * 100);
+  const cls = pct >= 55 ? 'good' : pct <= 45 ? 'bad' : 'mid';
+  return `<span class="live-rate"><span class="muted">${label}</span>
+    <b class="wr ${cls}">${pct}%</b> <span class="muted">(${games}g)</span></span>`;
+}
+
+function renderLiveGame() {
+  const { game, allies, enemies } = live;
+  const isSR = SR_QUEUES.has(game.gameQueueConfigId);
+  const myIdx = allies.findIndex(p => p.puuid === account.puuid);
+  const myChamp = myIdx >= 0 ? dd.byKey[allies[myIdx].championId] : null;
+
+  const teamRow = (p, i, list, side) => {
+    const c = dd.byKey[p.championId];
+    const name = p.riotId || '';
+    const isMe = p.puuid === account.puuid;
+    const lane = isSR && list.length === 5 ? `<span class="lane-tag">${ROLE_LABEL[LANE_ORDER[i]]}</span>` : '';
+
+    const rates = [];
+    if (c) {
+      if (side === 'allies') {
+        if (isMe) {
+          const s = agg.champStats[c.id];
+          if (s?.games) rates.push(liveRate('you on this champ', winrate(s), s.games));
+        } else {
+          const w = agg.withAlly[c.id];
+          if (w?.games >= 2) rates.push(liveRate('win with this ally', winrate(w), w.games));
+        }
+      } else {
+        const v = agg.vsEnemy[c.id];
+        if (v?.games >= 2) rates.push(liveRate('win vs', winrate(v), v.games));
+        // the enemy aligned with my slot is treated as my lane opponent
+        if (isSR && i === myIdx && myChamp && !isMe) {
+          const m = agg.matchups[`${myChamp.id}|${c.id}`];
+          if (m?.games) rates.push(liveRate('in lane', winrate(m), m.games));
+        }
+      }
+    }
+
+    const arrows = `<span class="order-btns">
+      <button class="order-btn" data-side="${side}" data-i="${i}" data-dir="-1" title="Move up" ${i === 0 ? 'disabled' : ''}>▲</button>
+      <button class="order-btn" data-side="${side}" data-i="${i}" data-dir="1" title="Move down" ${i === list.length - 1 ? 'disabled' : ''}>▼</button>
+    </span>`;
+
+    return `<div class="team-row${isMe ? ' me' : ''}${side === 'enemies' && i === myIdx && isSR ? ' my-lane' : ''}">
+      ${arrows}${lane}${c ? `<img src="${c.icon}" alt=""/>` : ''}<b>${c?.name || '?'}</b>
+      <span class="muted live-player">${isMe ? 'you' : (name !== c?.name ? name : '')}</span>
+      <span class="vs-note">${rates.join('')}</span>
+    </div>`;
+  };
+
+  // grouped, plain-language insights
+  const allyObjs = allies.map(p => dd.byKey[p.championId]).filter(Boolean);
+  const enemyObjs = enemies.map(p => dd.byKey[p.championId]).filter(Boolean);
+  const insights = [...teamInsights(allyObjs, enemyObjs), ...focusInsights(myChamp, enemyObjs)];
+  const SECTION_ICONS = { 'Your team': '🛡️', 'Enemy team': '⚔️', 'Game plan': '🗺️', 'Where to focus': '🎯' };
+  const insightHtml = Object.keys(SECTION_ICONS).map(sec => {
+    const items = insights.filter(i => i.section === sec);
+    if (!items.length) return '';
+    return `<div class="insight-group"><h3>${SECTION_ICONS[sec]} ${sec}</h3>
+      ${items.map(i => `<div class="insight ${i.type === 'warn' ? 'warn' : i.type === 'ok' ? 'ok' : ''}">${i.text}</div>`).join('')}</div>`;
+  }).join('');
+
+  const queueNote = QUEUE_NAMES[game.gameQueueConfigId] || `Queue ${game.gameQueueConfigId}`;
+  const mins = Math.floor((game.gameLength > 0 ? game.gameLength : 0) / 60);
+
+  $('liveResults').innerHTML = `
+    <div class="insight" style="margin-top:14px">🟢 <b>Live game found</b> — ${queueNote}, ~${mins} min in.</div>
+    ${isSR ? `<p class="muted" style="margin-top:8px">Use ▲▼ to match the real lane order (Top → Jungle → Mid → ADC → Support) —
+      the enemy in <b>your</b> slot is treated as your lane opponent and the rates update.</p>` : ''}
+    <div class="live-teams">
+      <div class="team-box ally"><h3>Your team</h3>${allies.map((p, i) => teamRow(p, i, allies, 'allies')).join('')}</div>
+      <div class="team-box enemy"><h3>Enemy team</h3>${enemies.map((p, i) => teamRow(p, i, enemies, 'enemies')).join('')}</div>
+    </div>
+    <div class="panel" style="margin-top:16px"><h2>Insights</h2>${insightHtml || '<p class="muted">Not enough data.</p>'}</div>`;
+
+  $('liveResults').querySelectorAll('.order-btn').forEach(btn => {
+    btn.onclick = () => {
+      const list = live[btn.dataset.side];
+      const i = parseInt(btn.dataset.i, 10), j = i + parseInt(btn.dataset.dir, 10);
+      [list[i], list[j]] = [list[j], list[i]];
+      renderLiveGame();
+    };
+  });
+}
+
+// "Where to focus" — personal history vs this exact lobby
+function focusInsights(myChamp, enemyObjs) {
+  const out = [];
+  for (const c of enemyObjs) {
+    const v = agg.vsEnemy[c.id];
+    if (v && v.games >= 3 && winrate(v) <= 0.4) {
+      out.push({ section: 'Where to focus', type: 'warn',
+        text: `<b>Watch out for ${c.name}</b> — you win only ${Math.round(winrate(v) * 100)}% when they're on the enemy team (${v.games}g). Respect them and track where they are.` });
+    }
+  }
+  if (myChamp) {
+    const s = agg.champStats[myChamp.id];
+    if (s?.games >= 3) {
+      const wr = winrate(s);
+      if (wr >= 0.55) out.push({ section: 'Where to focus', type: 'ok',
+        text: `<b>Comfort pick</b> — you win ${Math.round(wr * 100)}% on ${myChamp.name} (${s.games}g). Play to carry: push your lead and drag the map with you.` });
+      else if (wr <= 0.45) out.push({ section: 'Where to focus', type: 'warn',
+        text: `<b>Careful on ${myChamp.name}</b> — you win only ${Math.round(wr * 100)}% on it (${s.games}g). Play safe, farm up, and follow your strongest teammate's calls.` });
+    }
+  }
+  return out;
 }

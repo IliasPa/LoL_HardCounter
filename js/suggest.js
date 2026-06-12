@@ -98,54 +98,93 @@ export function metaGaps(meta, agg, role = '') {
   return out;
 }
 
-// ---------- Team composition insight ----------
+// ---------- Team composition insights ----------
+
+function compProfile(champs) {
+  const p = { physical: 0, magic: 0, frontline: 0, tags: {} };
+  for (const c of champs) {
+    p.physical += c.info.attack;
+    p.magic += c.info.magic;
+    if (c.info.defense >= 6 || c.tags.includes('Tank')) p.frontline++;
+    for (const t of c.tags) p.tags[t] = (p.tags[t] || 0) + 1;
+  }
+  p.adShare = p.physical / ((p.physical + p.magic) || 1);
+  p.scalers = (p.tags.Marksman || 0) + (p.tags.Mage || 0);      // late-game DPS
+  p.divers = (p.tags.Assassin || 0) + (p.tags.Fighter || 0);    // skirmish power
+  p.squishy = !p.tags.Tank && p.frontline === 0;
+  return p;
+}
 
 /**
- * allyChamps: array of champ objects from ddragon (with tags + info).
- * Returns human-readable insights about what the team has / lacks.
+ * Both teams' champ objects from ddragon (tags + info).
+ * Returns [{section: 'Your team'|'Enemy team'|'Game plan', type: 'ok'|'warn'|'info', text}].
+ * Each text leads with a <b>bold takeaway</b>, then one plain sentence of advice.
  */
-export function teamNeeds(allyChamps) {
-  if (!allyChamps.length) return [];
-  const insights = [];
+export function teamInsights(allies, enemies) {
+  const out = [];
+  const add = (section, type, text) => out.push({ section, type, text });
+  const a = compProfile(allies), e = compProfile(enemies);
+  const pct = x => Math.round(x * 100);
 
-  let physical = 0, magic = 0, frontline = 0, ranged = 0;
-  const tagCount = {};
-  for (const c of allyChamps) {
-    physical += c.info.attack;
-    magic += c.info.magic;
-    if (c.info.defense >= 6 || c.tags.includes('Tank')) frontline++;
-    if (c.tags.includes('Marksman') || c.tags.includes('Mage')) ranged++;
-    for (const t of c.tags) tagCount[t] = (tagCount[t] || 0) + 1;
+  // --- Your team ---
+  if (allies.length) {
+    if (a.adShare > 0.72) {
+      add('Your team', 'warn', `<b>Almost all your damage is physical (${pct(a.adShare)}%)</b> — the enemy can stack armor and shrug you off. Whoever can, build some armor penetration.`);
+    } else if (a.adShare < 0.28) {
+      add('Your team', 'warn', `<b>Almost all your damage is magic (${pct(1 - a.adShare)}%)</b> — the enemy can stack magic resist. Whoever can, build magic penetration.`);
+    } else {
+      add('Your team', 'ok', `<b>Mixed damage (≈${pct(a.adShare)}% physical / ${pct(1 - a.adShare)}% magic)</b> — the enemy can't itemize against everyone at once.`);
+    }
+    if (a.frontline === 0) {
+      add('Your team', 'warn', `<b>No frontline</b> — nobody can start fights or soak damage. Avoid head-on 5v5s; win with poke and picks instead.`);
+    } else if (a.frontline >= 3) {
+      add('Your team', 'warn', `<b>Very tanky team (${a.frontline} durable picks)</b> — you may lack damage. Funnel gold to your main carry and end fights fast.`);
+    } else {
+      add('Your team', 'ok', `<b>Solid frontline (${a.frontline})</b> — you can take fights head-on.`);
+    }
+    if (!a.tags.Marksman) {
+      add('Your team', 'warn', `<b>No marksman</b> — towers, Baron and Dragon die slowly for you. Only start objectives with a clear numbers advantage.`);
+    }
+    if (a.squishy && (a.tags.Mage || 0) + (a.tags.Marksman || 0) >= 3) {
+      add('Your team', 'warn', `<b>Very squishy comp</b> — one good engage can wipe you. Stay spread until their engage is down, then collapse.`);
+    }
   }
 
-  const total = physical + magic || 1;
-  const adShare = physical / total;
-
-  if (adShare > 0.72) {
-    insights.push({ type: 'warn', text: `Damage is heavily physical (${Math.round(adShare * 100)}% AD-leaning) — the enemy can stack armor. An AP threat (mage, AP bruiser) would help.` });
-  } else if (adShare < 0.28) {
-    insights.push({ type: 'warn', text: `Damage is heavily magic (${Math.round((1 - adShare) * 100)}% AP-leaning) — the enemy can stack magic resist. An AD threat would help.` });
-  } else {
-    insights.push({ type: 'ok', text: `Damage profile is mixed (≈${Math.round(adShare * 100)}% physical / ${Math.round((1 - adShare) * 100)}% magic) — hard to itemize against. 👍` });
+  // --- Enemy team ---
+  if (enemies.length) {
+    if (e.adShare > 0.72) {
+      add('Enemy team', 'info', `<b>Enemy damage is mostly physical (${pct(e.adShare)}%)</b> — armor is gold-efficient against them; grab early armor components.`);
+    } else if (e.adShare < 0.28) {
+      add('Enemy team', 'info', `<b>Enemy damage is mostly magic (${pct(1 - e.adShare)}%)</b> — magic resist is gold-efficient against them; grab early MR components.`);
+    }
+    if (e.frontline >= 2) {
+      add('Enemy team', 'info', `<b>Tanky enemy frontline (${e.frontline})</b> — don't dump everything into the tanks. % health damage helps; carries should hit whoever dives them, assassins should go around.`);
+    } else if (e.frontline === 0) {
+      add('Enemy team', 'ok', `<b>Enemy has no frontline</b> — they're all squishy. Hard engage on anyone wins the fight.`);
+    }
+    if ((e.tags.Assassin || 0) >= 1) {
+      add('Enemy team', 'warn', `<b>Assassin threat (${e.tags.Assassin})</b> — your squishies must not walk alone. Save peel (exhaust, knock-ups, shields) for the moment they jump in.`);
+    }
+    if ((e.tags.Marksman || 0) >= 1 && e.squishy === false && e.frontline >= 2) {
+      add('Enemy team', 'info', `<b>Protect-the-carry setup</b> — killing their marksman first usually decides the fight.`);
+    }
   }
 
-  if (frontline === 0) {
-    insights.push({ type: 'warn', text: 'No real frontline — consider a tank or beefy fighter to start fights and absorb damage.' });
-  } else if (frontline >= 3) {
-    insights.push({ type: 'warn', text: 'Lots of frontline but possibly low damage — make sure someone can actually kill things.' });
-  } else {
-    insights.push({ type: 'ok', text: `Frontline looks adequate (${frontline} durable pick${frontline > 1 ? 's' : ''}).` });
+  // --- Game plan ---
+  if (allies.length && enemies.length) {
+    if (a.scalers > e.scalers) {
+      add('Game plan', 'ok', `<b>You outscale them</b> — don't take coin-flip fights early. Farm safely, trade objectives evenly, and the game gets easier every minute.`);
+    } else if (a.scalers < e.scalers) {
+      add('Game plan', 'warn', `<b>They outscale you</b> — your window is the early/mid game. Play aggressively, snowball a lead, and try to end before ~30 minutes.`);
+    } else {
+      add('Game plan', 'info', `<b>Even scaling</b> — the game hinges on objective control. Track Dragon and Baron timers and set up 30s before they spawn.`);
+    }
+    if (a.divers >= 3) {
+      add('Game plan', 'info', `<b>You have a skirmish comp</b> — look for 2v2/3v3 fights, river/jungle picks and side-lane pressure rather than full 5v5s.`);
+    } else if (a.frontline >= 1 && (a.tags.Marksman || 0) >= 1 && a.scalers >= 2) {
+      add('Game plan', 'info', `<b>You have a teamfight comp</b> — group as five around objectives and force front-to-back fights.`);
+    }
   }
 
-  if (!tagCount['Marksman']) {
-    insights.push({ type: 'warn', text: 'No marksman — taking towers, Baron and Dragon will be slower. Sustained DPS would help.' });
-  }
-  if ((tagCount['Assassin'] || 0) >= 2) {
-    insights.push({ type: 'warn', text: 'Multiple assassins — strong vs squishies but the comp may fall over if behind. A reliable engage/peel pick adds safety.' });
-  }
-  if (!tagCount['Support'] && !tagCount['Tank'] && (tagCount['Mage'] || 0) + (tagCount['Marksman'] || 0) >= 3) {
-    insights.push({ type: 'warn', text: 'Very squishy comp — peel and disengage (enchanter / warden) would protect your carries.' });
-  }
-
-  return insights;
+  return out;
 }

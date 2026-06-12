@@ -52,6 +52,7 @@ export function aggregate(records) {
   const matchups = {};     // "myChamp|enemyChamp" -> {games, wins, pos} (lane opponents)
   const vsEnemy = {};      // enemyChamp -> {games, wins} (enemy anywhere on map)
   const myVsEnemy = {};    // "myChamp|enemyChamp" -> {games, wins} (enemy anywhere)
+  const withAlly = {};     // allyChamp (teammate, not me) -> {games, wins}
   let wins = 0;
   const srRecords = records.filter(r => SR_QUEUES.has(r.queue));
 
@@ -85,6 +86,14 @@ export function aggregate(records) {
       const mv = myVsEnemy[`${r.champ}|${e.champ}`] ??= { games: 0, wins: 0 };
       mv.games++; if (r.win) mv.wins++;
     }
+
+    // teammates (skip myself once — same champ can't appear twice on a team)
+    let selfSkipped = false;
+    for (const al of r.participants.filter(p => p.team === r.myTeam)) {
+      if (!selfSkipped && (al.me || al.champ === r.champ)) { selfSkipped = true; continue; }
+      const w = withAlly[al.champ] ??= { games: 0, wins: 0 };
+      w.games++; if (r.win) w.wins++;
+    }
   }
 
   return {
@@ -94,6 +103,7 @@ export function aggregate(records) {
     matchups,
     vsEnemy,
     myVsEnemy,
+    withAlly,
   };
 }
 

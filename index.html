@@ -101,25 +101,25 @@
     <div class="summary-card" id="summaryCard"></div>
 
     <nav class="tabs">
-      <button class="tab active" data-tab="counter">🎯 Counter Finder</button>
+      <button class="tab active" data-tab="counter">🎯 Counter Finder & Pool</button>
       <button class="tab" data-tab="profile">👤 Profile</button>
       <button class="tab" data-tab="live">📡 Live Game</button>
-      <button class="tab" data-tab="pool">🏆 Champion Pool</button>
       <button class="tab" data-tab="matchups">⚔️ Matchups</button>
     </nav>
 
     <!-- COUNTER FINDER : use during champ select -->
     <section id="tab-counter" class="tab-content">
       <div class="panel">
-        <h2>Champ Select Helper</h2>
-        <p class="muted">Type the enemy champions as they get picked. Suggestions combine <b>your personal
-        winrate vs each enemy</b> with meta strength. Pick your role to sharpen lane-matchup weighting.</p>
+        <h2>Champ Select Helper — Your Champion Pool</h2>
+        <p class="muted">Type the enemy champions as they get picked — the <b>Pick score</b> column combines
+        your personal winrate vs those enemies with your comfort on each champ. Pick your role to sharpen
+        lane-matchup weighting. Click a column header to sort, click a champion for its <b>builds &amp; runes</b>.</p>
         <div class="enemy-input-row">
           <div class="champ-search">
             <input id="enemySearch" type="text" placeholder="Add enemy champion…" autocomplete="off" />
             <div id="enemySuggest" class="champ-suggest hidden"></div>
           </div>
-          <select id="myRole">
+          <select id="myRole" title="Your role — boosts score and filters the table">
             <option value="">Any role</option>
             <option value="TOP">Top</option>
             <option value="JUNGLE">Jungle</option>
@@ -127,16 +127,38 @@
             <option value="BOTTOM">ADC</option>
             <option value="UTILITY">Support</option>
           </select>
+          <select id="poolMinGames" title="Minimum games on the champion">
+            <option value="1">≥ 1 game</option>
+            <option value="2">≥ 2 games</option>
+            <option value="3">≥ 3 games</option>
+            <option value="5">≥ 5 games</option>
+            <option value="10">≥ 10 games</option>
+          </select>
           <button id="clearEnemiesBtn" class="btn ghost">Clear</button>
         </div>
         <div id="enemyChips" class="chips"></div>
-        <div id="counterResults"></div>
+        <div id="poolResults"></div>
       </div>
       <div class="panel">
         <h2>📈 Meta picks you don't play (yet)</h2>
         <p class="muted">Strong this season but missing (or rare) in your match history. Edit
         <code>data/meta.json</code> in the repo to keep this list current with patches.</p>
         <div id="metaResults"></div>
+      </div>
+      <div class="panel">
+        <h2>🛠️ Build lookup</h2>
+        <p class="muted">Look up builds &amp; runes for <b>any</b> champion seen in your analyzed matches —
+        including ones you don't play.</p>
+        <div class="champ-search">
+          <input id="buildSearch" type="text" placeholder="Search a champion…" autocomplete="off" />
+          <div id="buildSuggest" class="champ-suggest hidden"></div>
+        </div>
+        <div id="buildResults"></div>
+      </div>
+      <div class="panel">
+        <h2>😨 Enemies you struggle against</h2>
+        <p class="muted">Your winrate whenever this champion is on the enemy team (any lane).</p>
+        <div id="nemesisResults"></div>
       </div>
     </section>
 
@@ -153,31 +175,6 @@
         use the Counter Finder tab.</p>
         <button id="liveBtn" class="btn primary">Check live game</button>
         <div id="liveResults"></div>
-      </div>
-    </section>
-
-    <!-- CHAMPION POOL -->
-    <section id="tab-pool" class="tab-content hidden">
-      <div class="panel">
-        <h2>Your Champion Pool</h2>
-        <p class="muted">Click a column header to sort. Click a champion to see its <b>builds & runes</b>,
-        mined from every player of that champion across your analyzed matches.</p>
-        <div id="poolResults"></div>
-      </div>
-      <div class="panel">
-        <h2>🛠️ Build lookup</h2>
-        <p class="muted">Look up builds &amp; runes for <b>any</b> champion seen in your analyzed matches —
-        including ones you don't play.</p>
-        <div class="champ-search">
-          <input id="buildSearch" type="text" placeholder="Search a champion…" autocomplete="off" />
-          <div id="buildSuggest" class="champ-suggest hidden"></div>
-        </div>
-        <div id="buildResults"></div>
-      </div>
-      <div class="panel">
-        <h2>😨 Enemies you struggle against</h2>
-        <p class="muted">Your winrate whenever this champion is on the enemy team (any lane).</p>
-        <div id="nemesisResults"></div>
       </div>
     </section>
 
