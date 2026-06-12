@@ -1,5 +1,5 @@
-// Riot API client — browser-side, key passed as ?api_key= (Riot sends CORS headers).
-// Respects dev-key rate limits: 20 req / 1s and 100 req / 2min, with 429 retry.
+// Riot API client — talks to our own /api/riot serverless proxy (which holds the
+// secret key), never to Riot directly. Still throttles client-side to avoid 429s.
 
 const PLATFORM_TO_REGIONAL = {
   euw1: 'europe', eun1: 'europe', tr1: 'europe', ru: 'europe', me1: 'europe',
@@ -16,11 +16,15 @@ export class RiotAPIError extends Error {
 }
 
 export class RiotAPI {
-  constructor(apiKey, platform) {
-    this.apiKey = apiKey.trim();
+  constructor() {
+    this.platform = null;             // detected after account lookup
+    this.regional = 'europe';         // default cluster for the account lookup
+    this.timestamps = [];             // request times for rate limiting
+  }
+
+  setPlatform(platform) {
     this.platform = platform;
     this.regional = PLATFORM_TO_REGIONAL[platform] || 'europe';
-    this.timestamps = []; // request times for rate limiting
   }
 
   async throttle() {
@@ -42,13 +46,12 @@ export class RiotAPI {
 
   async request(host, path, attempt = 0) {
     await this.throttle();
-    const sep = path.includes('?') ? '&' : '?';
-    const url = `https://${host}.api.riotgames.com${path}${sep}api_key=${encodeURIComponent(this.apiKey)}`;
+    const url = `/api/riot?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
     let res;
     try {
       res = await fetch(url);
     } catch (e) {
-      throw new RiotAPIError(0, 'Network error — check your connection (or an ad-blocker is blocking api.riotgames.com).');
+      throw new RiotAPIError(0, 'Network error — could not reach the server.');
     }
     if (res.status === 429 && attempt < 3) {
       const retryAfter = parseInt(res.headers.get('Retry-After') || '10', 10);
@@ -58,10 +61,11 @@ export class RiotAPI {
     if (!res.ok) {
       const messages = {
         400: 'Bad request.',
-        401: 'API key missing or invalid. Open 🔑 settings and paste a valid key.',
-        403: 'API key invalid or expired. Dev keys expire every 24h — grab a fresh one at developer.riotgames.com.',
+        401: 'Server Riot key missing or invalid.',
+        403: 'Server Riot key invalid or expired (dev keys expire every 24h — set a fresh RIOT_API_KEY).',
         404: 'NOT_FOUND',
         429: 'Rate limited by Riot. Wait a minute and try again.',
+        500: 'Server is missing the RIOT_API_KEY environment variable.',
         503: 'Riot API is temporarily unavailable. Try again shortly.',
       };
       throw new RiotAPIError(res.status, messages[res.status] || `Riot API error (HTTP ${res.status}).`);
@@ -72,16 +76,39 @@ export class RiotAPI {
   regionalReq(path) { return this.request(this.regional, path); }
   platformReq(path) { return this.request(this.platform, path); }
 
-  // --- Account / identity ---
+  // --- Account / identity (regional routing; clusters are globally synced) ---
   async getAccountByRiotId(gameName, tagLine) {
-    try {
-      return await this.regionalReq(
-        `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
-      );
-    } catch (e) {
-      if (e.status === 404) throw new RiotAPIError(404, `Account "${gameName}#${tagLine}" not found in this region group. Check the spelling and the region.`);
-      throw e;
+    const path = `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`;
+    for (const cluster of ['europe', 'americas', 'asia']) {
+      try {
+        return await this.request(cluster, path);
+      } catch (e) {
+        if (e.status !== 404) throw e; // real error — surface it, don't keep trying
+      }
     }
+    throw new RiotAPIError(404, `Account "${gameName}#${tagLine}" not found. Check the spelling (Name#TAG).`);
+  }
+
+  // Detect which platform (euw1, na1, kr…) an account plays on, from the puuid alone.
+  async detectPlatform(puuid) {
+    // 1) Riot's region endpoint (not always enabled for dev keys)
+    try {
+      const r = await this.request(this.regional, `/riot/account/v1/region/by-game/lol/by-puuid/${puuid}`);
+      const plat = String(r?.region || '').toLowerCase();
+      if (PLATFORM_TO_REGIONAL[plat]) return plat;
+    } catch { /* fall through to probing */ }
+    // 2) Probe match clusters — the newest match id is prefixed with the platform
+    //    ("EUW1_123…"), which is ground truth for where the account plays.
+    for (const cluster of ['europe', 'americas', 'asia', 'sea']) {
+      try {
+        const ids = await this.request(cluster, `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=1`);
+        if (ids?.length) {
+          const plat = ids[0].split('_')[0].toLowerCase();
+          if (PLATFORM_TO_REGIONAL[plat]) return plat;
+        }
+      } catch { /* wrong cluster or hiccup — try the next */ }
+    }
+    return null;
   }
 
   // --- Match history ---

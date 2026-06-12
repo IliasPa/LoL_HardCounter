@@ -1,13 +1,12 @@
 import { RiotAPI, RiotAPIError } from './riotApi.js';
 import { loadStaticData, searchChampions } from './ddragon.js';
 import { extractRecord, aggregate, buildStats, winrate, kda, SR_QUEUES, REC_VERSION } from './analysis.js';
-import { suggestCounters, metaGaps, teamInsights } from './suggest.js';
+import { suggestCounters, teamInsights } from './suggest.js';
 import * as gist from './gist.js';
 import * as store from './store.js';
 
 // ---------- App state ----------
 let dd = null;          // static data (champs, runes, items)
-let meta = null;        // curated meta picks
 let api = null;         // RiotAPI instance
 let account = null;     // {puuid, gameName, tagLine}
 let summoner = null;    // {profileIconId, summonerLevel}
@@ -69,26 +68,15 @@ init();
 function init() {
   const s = store.getSettings();
   if (s.riotId) $('riotId').value = s.riotId;
-  if (s.region) $('region').value = s.region;
   if (s.queueFilter) $('queueFilter').value = s.queueFilter;
   if (s.matchCount) $('matchCount').value = s.matchCount;
-  $('apiKey').value = store.getApiKey();
-  $('githubToken').value = store.getGithubToken();
-  if (!store.getApiKey()) $('settingsPanel').classList.remove('hidden');
-  updateKeyStatus();
-  updateGithubStatus();
 
   $('settingsBtn').onclick = () => $('settingsPanel').classList.toggle('hidden');
-  $('saveKeyBtn').onclick = () => {
-    store.setApiKey($('apiKey').value);
-    updateKeyStatus();
-  };
   $('clearCacheBtn').onclick = () => {
     const n = store.clearMatchCache();
     importedCache = {}; // also drop records loaded from gist sync / file imports this session
-    $('keyStatus').textContent = `Cleared ${n} cached matches from this browser (and any synced/imported data in memory). The next Analyze refetches everything from Riot.`;
+    $('cacheStatus').textContent = `Cleared ${n} cached matches from this browser (and any synced/imported data in memory). The next Analyze refetches everything from Riot.`;
   };
-  $('saveGithubBtn').onclick = saveGithubToken;
   $('exportBtn').onclick = exportData;
   $('importBtn').onclick = () => $('importFile').click();
   $('importFile').onchange = importData;
@@ -118,31 +106,6 @@ function init() {
   $('muMinGames').onchange = renderMatchups;
 }
 
-function updateKeyStatus() {
-  $('keyStatus').textContent = store.getApiKey()
-    ? '✅ Riot key saved in this browser.'
-    : '⚠️ No Riot key set — the app cannot reach the Riot API without one.';
-}
-
-async function saveGithubToken() {
-  const token = $('githubToken').value.trim();
-  store.setGithubToken(token);
-  if (!token) { $('githubStatus').textContent = 'GitHub sync disabled.'; return; }
-  $('githubStatus').textContent = 'Checking token…';
-  try {
-    const login = await gist.whoAmI(token);
-    $('githubStatus').textContent = `✅ Connected as ${login} — data will sync to a private gist after each analysis.`;
-  } catch (e) {
-    $('githubStatus').textContent = `❌ ${e.message}`;
-  }
-}
-
-function updateGithubStatus() {
-  $('githubStatus').textContent = store.getGithubToken()
-    ? '✅ GitHub token saved — data syncs to a private gist after each analysis.'
-    : 'No token — data stays in this browser only (you can still use file export/import).';
-}
-
 // ---------- JSON file export / import ----------
 function exportData() {
   if (!account || !records.length) {
@@ -165,7 +128,7 @@ function exportPayload() {
   for (const r of records) merged[r.id] = r;
   return {
     v: 1,
-    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: $('region').value },
+    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: api?.platform || '' },
     savedAt: Date.now(),
     records: Object.values(merged).sort((a, b) => b.ts - a.ts),
   };
@@ -236,9 +199,9 @@ function kdaSpan(v) {
 }
 
 // clickable sort header; state = {key, dir}
-function sortTh(state, key, label, title = '') {
+function sortTh(state, key, label, title = '', cls = '') {
   const active = state.key === key;
-  return `<th class="sortable${active ? ' sorted' : ''}" data-key="${key}" ${title ? `title="${title}"` : ''}>
+  return `<th class="sortable${active ? ' sorted' : ''}${cls ? ' ' + cls : ''}" data-key="${key}" ${title ? `title="${title}"` : ''}>
     ${label}${active ? (state.dir === -1 ? ' ▼' : ' ▲') : ''}</th>`;
 }
 
@@ -263,30 +226,27 @@ async function analyze() {
   const riotIdRaw = $('riotId').value.trim();
   const m = riotIdRaw.match(/^(.{2,})\s*#\s*(.{2,})$/);
   if (!m) return showError('Enter your Riot ID in the form Name#TAG (e.g. Faker#KR1).');
-  if (!store.getApiKey()) {
-    $('settingsPanel').classList.remove('hidden');
-    return showError('Set your Riot API key first (🔑 button).');
-  }
 
-  const region = $('region').value;
   const queueFilter = $('queueFilter').value;
   const countSetting = $('matchCount').value;
   const maxCount = countSetting === 'all' ? 5000 : parseInt(countSetting, 10);
-  store.saveSettings({ riotId: riotIdRaw, region, queueFilter, matchCount: countSetting });
+  store.saveSettings({ riotId: riotIdRaw, queueFilter, matchCount: countSetting });
 
   $('analyzeBtn').disabled = true;
   cancelAnalysis = false;
   try {
     setProgress('Loading champion / rune / item data…', 0.02);
-    [dd, meta] = await Promise.all([
-      loadStaticData(),
-      meta ? Promise.resolve(meta) : fetch('data/meta.json').then(r => r.json()).catch(() => ({ roles: {} })),
-    ]);
+    dd = await loadStaticData();
 
-    api = new RiotAPI(store.getApiKey(), region);
+    api = new RiotAPI();
 
     setProgress('Finding account…', 0.04);
     account = await api.getAccountByRiotId(m[1].trim(), m[2].trim());
+
+    setProgress('Detecting region…', 0.05);
+    const plat = await api.detectPlatform(account.puuid);
+    api.setPlatform(plat || store.getSettings().region || 'euw1');
+    store.saveSettings({ region: api.platform });
 
     setProgress('Fetching rank & profile…', 0.06);
     [summoner, leagueEntries] = await Promise.all([
@@ -295,21 +255,20 @@ async function analyze() {
     ]);
 
     // Pull previously synced data from GitHub so we don't refetch those matches
-    const token = store.getGithubToken();
+    // (server-side token; silently skipped if GitHub sync isn't configured)
     let gistId = store.getSettings().gistId || null;
-    if (token) {
-      try {
-        setProgress('Loading saved data from GitHub…', 0.08);
-        gistId = await gist.ensureGist(token, gistId);
-        store.saveSettings({ gistId });
-        const saved = await gist.loadAccountData(token, gistId, account.puuid);
-        if (saved?.records) {
-          const map = importedCache[account.puuid] ??= {};
-          for (const r of saved.records) map[r.id] ??= r;
-        }
-      } catch (e) {
-        console.warn('GitHub sync load failed:', e);
+    try {
+      setProgress('Loading saved data from GitHub…', 0.08);
+      gistId = await gist.ensureGist(gistId);
+      store.saveSettings({ gistId });
+      const saved = await gist.loadAccountData(gistId, account.puuid);
+      if (saved?.records) {
+        const map = importedCache[account.puuid] ??= {};
+        for (const r of saved.records) map[r.id] ??= r;
       }
+    } catch (e) {
+      console.warn('GitHub sync unavailable:', e.message);
+      gistId = null;
     }
 
     setProgress('Fetching match list…', 0.1);
@@ -335,7 +294,7 @@ async function analyze() {
       const any = cancelAnalysis ? [] : await api.getMatchIds(account.puuid, { start: 0, count: 1 }).catch(() => []);
       throw new Error(any.length
         ? 'This account has matches, but none pass the chosen queue filter — switch the dropdown to "All SR games" and try again.'
-        : 'No matches found for this account in this region — check the region dropdown.');
+        : 'No matches found for this account.');
     }
 
     const mem = importedCache[account.puuid] || {};
@@ -387,8 +346,8 @@ async function analyze() {
     $('welcome').classList.add('hidden');
     $('app').classList.remove('hidden');
 
-    // Sync to GitHub immediately (non-blocking)
-    if (token && gistId) syncToGist(token, gistId);
+    // Sync to GitHub immediately (non-blocking; only if sync is configured server-side)
+    if (gistId) syncToGist(gistId);
   } catch (e) {
     hideProgress();
     showError(e instanceof RiotAPIError ? e.message : (e.message || String(e)));
@@ -397,12 +356,12 @@ async function analyze() {
   }
 }
 
-async function syncToGist(token, gistId) {
+async function syncToGist(gistId) {
   const el = $('syncStatus');
   try {
     el.textContent = '☁️ Syncing to GitHub…';
     const payload = exportPayload();
-    await gist.saveAccountData(token, gistId, account.puuid, payload);
+    await gist.saveAccountData(gistId, account.puuid, payload);
     el.textContent = `☁️ Synced ${payload.records.length} matches to GitHub ✅`;
   } catch (e) {
     el.textContent = `☁️ GitHub sync failed: ${e.message}`;
@@ -789,7 +748,6 @@ function addEnemy(champId) {
 
 function renderCounterTab() {
   if (!agg) return;
-  const role = roleVal('myRole');
 
   $('enemyChips').innerHTML = enemyPicks.map(id => {
     const c = champOf(id);
@@ -801,19 +759,6 @@ function renderCounterTab() {
   });
 
   renderPool();
-
-  // Meta gaps (excluding enemy picks)
-  const taken = new Set(enemyPicks.map(x => x.toLowerCase()));
-  const gaps = metaGaps(meta, agg, role).filter(g => !taken.has(g.id.toLowerCase())).slice(0, 10);
-  $('metaResults').innerHTML = !gaps.length
-    ? '<p class="muted">Nothing to suggest — you already play the meta picks for this role. 💪</p>'
-    : `<table><thead><tr><th>Champion</th><th>Role</th><th>Why it's strong</th><th>Your games</th></tr></thead><tbody>` +
-      gaps.map(g => `<tr>
-        <td>${champCell(g.id)}</td>
-        <td>${roleIcon(g.role) || g.role}</td>
-        <td class="muted">${g.why}</td>
-        <td>${g.playedGames === 0 ? '<span class="badge gold">NEW</span>' : `${g.playedGames}g`}</td>
-      </tr>`).join('') + '</tbody></table>';
 }
 
 // ---------- Champion Pool (merged with Counter Finder) & nemesis ----------
@@ -869,9 +814,9 @@ function renderPool() {
     const expanded = poolExpanded === d.champ;
     return `<tr class="pool-row${expanded ? ' expanded' : ''}" data-champ="${d.champ}" title="Click for builds & runes">
       <td>${champCell(d.champ)}</td>
-      <td>${scoreCell}</td>
+      <td class="col-center">${scoreCell}</td>
       ${evidenceCell}
-      <td><b>${d.games}</b></td>
+      <td class="col-center"><b>${d.games}</b></td>
       <td>${wrSpan(d.wr, null)}</td>
       <td>${kdaSpan(d.kdaVal)}</td>
       ${showMk ? `<td>${mkCell(d.s.mk)}</td>` : ''}
@@ -883,9 +828,9 @@ function renderPool() {
     ? '<p class="muted">No champions pass the current filters — analyze more games or relax the filters.</p>'
     : `<table><thead><tr>
       <th>Champion</th>
-      ${sortTh(poolSort, 'score', 'Pick score', 'Your winrate vs the picked enemies blended with your comfort on the champ')}
+      ${sortTh(poolSort, 'score', 'Pick score', 'Your winrate vs the picked enemies blended with your comfort on the champ', 'col-center')}
       ${showEvidence ? '<th>Evidence vs picks</th>' : ''}
-      ${sortTh(poolSort, 'games', 'Games')}
+      ${sortTh(poolSort, 'games', 'Games', '', 'col-center')}
       ${sortTh(poolSort, 'wr', 'Winrate')}
       ${sortTh(poolSort, 'kdaVal', 'KDA')}
       ${showMk ? sortTh(poolSort, 'mkScore', '2·3·4·5×', 'Double · Triple · Quadra · Penta kills') : ''}
@@ -1210,7 +1155,7 @@ function renderLiveGame() {
     const c = dd.byKey[p.championId];
     const name = p.riotId || '';
     const isMe = p.puuid === account.puuid;
-    const lane = isSR && list.length === 5 ? `<span class="lane-tag">${ROLE_LABEL[LANE_ORDER[i]]}</span>` : '';
+    const laneTag = isSR && list.length === 5 ? `<span class="lp-lane">${ROLE_LABEL[LANE_ORDER[i]]}</span>` : '';
 
     const rates = [];
     if (c) {
@@ -1233,17 +1178,25 @@ function renderLiveGame() {
       }
     }
 
-    const arrows = `<span class="order-btns">
+    const arrows = `<span class="lp-order">
       <button class="order-btn" data-side="${side}" data-i="${i}" data-dir="-1" title="Move up" ${i === 0 ? 'disabled' : ''}>▲</button>
       <button class="order-btn" data-side="${side}" data-i="${i}" data-dir="1" title="Move down" ${i === list.length - 1 ? 'disabled' : ''}>▼</button>
     </span>`;
 
-    return `<div class="team-row${isMe ? ' me' : ''}${side === 'enemies' && i === myIdx && isSR ? ' my-lane' : ''}">
-      ${arrows}${lane}${c ? `<img src="${c.icon}" alt=""/>` : ''}<b>${c?.name || '?'}</b>
-      <span class="muted live-player">${isMe ? 'you' : (name !== c?.name ? name : '')}</span>
-      ${rankBadge(p)}
-      <span class="vs-note">${rates.join('')}</span>
-    </div>${isMe ? '' : scoutLine(p)}`;
+    const scout = isMe ? '' : scoutLine(p);
+    return `<div class="lp-card${isMe ? ' me' : ''}${side === 'enemies' && i === myIdx && isSR ? ' my-lane' : ''}">
+      <div class="lp-head">
+        ${arrows}${laneTag}
+        ${c ? `<img class="lp-champ" src="${c.icon}" alt=""/>` : '<span class="lp-champ lp-champ-empty"></span>'}
+        <span class="lp-id">
+          <b>${c?.name || '?'}</b>
+          <span class="lp-name muted">${isMe ? 'you' : (name && name !== c?.name ? name : '')}</span>
+        </span>
+        <span class="lp-rank">${rankBadge(p)}</span>
+      </div>
+      ${rates.length ? `<div class="lp-rates">${rates.join('')}</div>` : ''}
+      ${scout}
+    </div>`;
   };
 
   // grouped, plain-language insights
@@ -1325,18 +1278,23 @@ function scoutLine(p) {
   return bits.length ? `<div class="scout-line">${bits.join('')}</div>` : '';
 }
 
+function scoutTargets() {
+  if (!live) return [];
+  return [...live.allies, ...live.enemies].filter(p => p.puuid && p.puuid !== account.puuid);
+}
+
 function deepScoutButton() {
   if (!live) return '';
-  const left = live.enemies.filter(p => p.puuid && !scoutCache.has(p.puuid)).length;
+  const left = scoutTargets().filter(p => !scoutCache.has(p.puuid)).length;
   if (!left && !scouting) return '';
   return `<button id="deepScoutBtn" class="btn ghost" style="margin-top:12px" ${scouting ? 'disabled' : ''}>
-    ${scouting ? `🔍 ${scoutProgress}` : `🔍 Deep scout enemies — last 8 games each (~1 min on a dev key)`}</button>`;
+    ${scouting ? `🔍 ${scoutProgress}` : `🔍 Deep scout all players — last 8 games each (~1 min on a dev key)`}</button>`;
 }
 
 async function deepScout() {
   if (!live || scouting) return;
   scouting = true;
-  const targets = live.enemies.filter(p => p.puuid && !scoutCache.has(p.puuid));
+  const targets = scoutTargets().filter(p => !scoutCache.has(p.puuid));
   try {
     for (let t = 0; t < targets.length; t++) {
       const p = targets[t];

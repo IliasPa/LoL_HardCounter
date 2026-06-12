@@ -1,209 +1,225 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LoL HardCounter — Smart Pick Suggestions</title>
-  <link rel="stylesheet" href="css/style.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⚔️</text></svg>" />
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand">⚔️ LoL <span>HardCounter</span></div>
-    <div class="account-form">
-      <input id="riotId" type="text" placeholder="Riot ID (e.g. Faker#KR1)" autocomplete="off" />
-      <select id="region" title="Platform region">
-        <option value="euw1">EUW</option>
-        <option value="eun1">EUNE</option>
-        <option value="na1">NA</option>
-        <option value="kr">KR</option>
-        <option value="br1">BR</option>
-        <option value="jp1">JP</option>
-        <option value="la1">LAN</option>
-        <option value="la2">LAS</option>
-        <option value="oc1">OCE</option>
-        <option value="tr1">TR</option>
-        <option value="ru">RU</option>
-        <option value="me1">ME</option>
-        <option value="sg2">SG</option>
-        <option value="tw2">TW</option>
-        <option value="vn2">VN</option>
-        <option value="ph2">PH</option>
-        <option value="th2">TH</option>
-      </select>
-      <select id="queueFilter" title="Which games to analyze">
-        <option value="ranked-solo">Ranked Solo</option>
-        <option value="ranked-all" selected>Ranked Solo+Flex</option>
-        <option value="all">All SR games</option>
-      </select>
-      <select id="matchCount" title="How many recent games to analyze">
-        <option value="30">30 games</option>
-        <option value="60" selected>60 games</option>
-        <option value="100">100 games</option>
-        <option value="200">200 games</option>
-        <option value="400">400 games (~5 min first time)</option>
-        <option value="1000">1000 games (~20 min first time)</option>
-        <option value="all">All games (can be very slow)</option>
-      </select>
-      <button id="analyzeBtn" class="btn primary">Analyze</button>
-      <button id="settingsBtn" class="btn ghost" title="API key settings">🔑</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LoL HardCounter — Smart Pick Suggestions</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⚔️</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">⚔️ LoL <span>HardCounter</span></div>
+      <div class="account-form">
+        <input
+          id="riotId"
+          type="text"
+          placeholder="Riot ID (e.g. Faker#KR1)"
+          autocomplete="off"
+        />
+        <select id="queueFilter" title="Which games to analyze">
+          <option value="ranked-solo">Ranked Solo</option>
+          <option value="ranked-all" selected>Ranked Solo+Flex</option>
+          <option value="all">All SR games</option>
+        </select>
+        <select id="matchCount" title="How many recent games to analyze">
+          <option value="30">30 games</option>
+          <option value="60" selected>60 games</option>
+          <option value="100">100 games</option>
+          <option value="200">200 games</option>
+          <option value="400">400 games (~5 min first time)</option>
+          <option value="1000">1000 games (~20 min first time)</option>
+          <option value="all">All games (can be very slow)</option>
+        </select>
+        <button id="analyzeBtn" class="btn primary">Analyze</button>
+        <button id="settingsBtn" class="btn ghost" title="Data &amp; cache settings">
+          ⚙️
+        </button>
+      </div>
+    </header>
+
+    <div id="settingsPanel" class="settings hidden">
+      <h3>⚙️ Data &amp; cache</h3>
+      <p>
+        Your Riot API key and (optional) GitHub sync token live on the
+        <strong>server</strong> as Vercel environment variables — nothing
+        sensitive is stored in your browser. Analyzed matches are cached locally
+        so re-analyzing is fast; clear that cache to force a fresh fetch.
+      </p>
+      <div class="settings-row">
+        <button id="clearCacheBtn" class="btn ghost">
+          Clear cached matches
+        </button>
+      </div>
+      <p id="cacheStatus" class="muted"></p>
+
+      <h3 style="margin-top: 18px">📁 JSON file backup</h3>
+      <p>
+        Prefer a plain file? Export your analyzed data as JSON, and import it
+        later (or on another machine).
+      </p>
+      <div class="settings-row">
+        <button id="exportBtn" class="btn ghost">⬇️ Export data (.json)</button>
+        <button id="importBtn" class="btn ghost">⬆️ Import data (.json)</button>
+        <input
+          id="importFile"
+          type="file"
+          accept=".json,application/json"
+          class="hidden"
+        />
+      </div>
+      <p id="fileStatus" class="muted"></p>
     </div>
-  </header>
 
-  <div id="settingsPanel" class="settings hidden">
-    <h3>🔑 Riot API Key</h3>
-    <p>
-      This app is 100% static — it runs entirely in your browser and needs <em>your own free</em> Riot API key.
-      Get one in 30 seconds at
-      <a href="https://developer.riotgames.com" target="_blank" rel="noopener">developer.riotgames.com</a>
-      (log in → copy the "Development API Key"). The key is stored only in your browser (localStorage)
-      and sent only to Riot's servers. <strong>Dev keys expire every 24h</strong> — for a permanent key,
-      register a free "Personal" app on the same page.
-    </p>
-    <div class="settings-row">
-      <input id="apiKey" type="password" placeholder="RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
-      <button id="saveKeyBtn" class="btn primary">Save key</button>
-      <button id="clearCacheBtn" class="btn ghost">Clear cached matches</button>
+    <div id="progress" class="progress hidden">
+      <div class="progress-label" id="progressLabel">Loading…</div>
+      <div class="progress-row">
+        <div class="progress-track">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <button
+          id="progressCancel"
+          class="progress-cancel"
+          title="Stop fetching — analyze what's loaded so far"
+        >
+          ✕
+        </button>
+      </div>
     </div>
-    <p id="keyStatus" class="muted"></p>
 
-    <h3 style="margin-top:18px">☁️ GitHub sync (optional)</h3>
-    <p>
-      Paste a GitHub token with the <b>gist</b> scope
-      (<a href="https://github.com/settings/tokens/new?scopes=gist&description=LoL%20HardCounter" target="_blank" rel="noopener">create one here</a>)
-      and your analyzed match data is saved to a <b>private Gist</b> automatically after every analysis
-      — and restored from it on any device, instead of relying on this browser's localStorage.
-    </p>
-    <div class="settings-row">
-      <input id="githubToken" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx (gist scope)" />
-      <button id="saveGithubBtn" class="btn primary">Save token</button>
-    </div>
-    <p id="githubStatus" class="muted"></p>
+    <div id="error" class="error hidden"></div>
 
-    <h3 style="margin-top:18px">📁 JSON file backup</h3>
-    <p>Prefer a plain file? Export your analyzed data as JSON, and import it later (or on another machine).</p>
-    <div class="settings-row">
-      <button id="exportBtn" class="btn ghost">⬇️ Export data (.json)</button>
-      <button id="importBtn" class="btn ghost">⬆️ Import data (.json)</button>
-      <input id="importFile" type="file" accept=".json,application/json" class="hidden" />
-    </div>
-    <p id="fileStatus" class="muted"></p>
-  </div>
+    <main id="app" class="hidden">
+      <div class="summary-card" id="summaryCard"></div>
 
-  <div id="progress" class="progress hidden">
-    <div class="progress-label" id="progressLabel">Loading…</div>
-    <div class="progress-row">
-      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
-      <button id="progressCancel" class="progress-cancel" title="Stop fetching — analyze what's loaded so far">✕</button>
-    </div>
-  </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="profile">👤 Profile</button>
+        <button class="tab" data-tab="counter">🏆 Counter Finder</button>
+        <button class="tab" data-tab="matchups">⚔️ Matchups</button>
+        <button class="tab" data-tab="climb">📈 Climb</button>
+        <button class="tab" data-tab="live">📡 Live Game</button>
+      </nav>
 
-  <div id="error" class="error hidden"></div>
-
-  <main id="app" class="hidden">
-    <div class="summary-card" id="summaryCard"></div>
-
-    <nav class="tabs">
-      <button class="tab active" data-tab="profile">👤 Profile</button>
-      <button class="tab" data-tab="counter">🏆 Champion Pool</button>
-      <button class="tab" data-tab="matchups">⚔️ Matchups</button>
-      <button class="tab" data-tab="climb">📈 Climb</button>
-      <button class="tab" data-tab="live">📡 Live Game</button>
-    </nav>
-
-    <!-- CHAMPION POOL : also the champ-select helper -->
-    <section id="tab-counter" class="tab-content hidden">
-      <div class="panel">
-        <h2>Champ Select Helper — Your Champion Pool</h2>
-        <p class="muted">Type the enemy champions as they get picked — the <b>Pick score</b> column combines
-        your personal winrate vs those enemies with your comfort on each champ. Pick your role to sharpen
-        lane-matchup weighting. Click a column header to sort, click a champion for its <b>builds &amp; runes</b>.</p>
-        <div class="enemy-input-row">
-          <div class="champ-search">
-            <input id="enemySearch" type="text" placeholder="Add enemy champion…" autocomplete="off" />
-            <div id="enemySuggest" class="champ-suggest hidden"></div>
+      <!-- CHAMPION POOL : also the champ-select helper -->
+      <section id="tab-counter" class="tab-content hidden">
+        <div class="panel">
+          <h2>Your Champion Pool</h2>
+          <p class="muted">
+            Type the enemy champions as they get picked — the
+            <b>Pick score</b> column combines your personal winrate vs those
+            enemies with your comfort on each champ. Pick your role to sharpen
+            lane-matchup weighting. Click a column header to sort, click a
+            champion for its <b>builds &amp; runes</b>.
+          </p>
+          <div class="enemy-input-row">
+            <div class="champ-search">
+              <input
+                id="enemySearch"
+                type="text"
+                placeholder="Add enemy champion…"
+                autocomplete="off"
+              />
+              <div id="enemySuggest" class="champ-suggest hidden"></div>
+            </div>
+            <div
+              id="myRole"
+              class="role-picker"
+              title="Your role — boosts score and filters the table"
+            ></div>
+            <select id="poolMinGames" title="Minimum games on the champion">
+              <option value="1">≥ 1 game</option>
+              <option value="2">≥ 2 games</option>
+              <option value="3">≥ 3 games</option>
+              <option value="5">≥ 5 games</option>
+              <option value="10">≥ 10 games</option>
+            </select>
+            <button id="clearEnemiesBtn" class="btn ghost">Clear</button>
           </div>
-          <div id="myRole" class="role-picker" title="Your role — boosts score and filters the table"></div>
-          <select id="poolMinGames" title="Minimum games on the champion">
-            <option value="1">≥ 1 game</option>
-            <option value="2">≥ 2 games</option>
-            <option value="3">≥ 3 games</option>
-            <option value="5">≥ 5 games</option>
-            <option value="10">≥ 10 games</option>
-          </select>
-          <button id="clearEnemiesBtn" class="btn ghost">Clear</button>
+          <div id="enemyChips" class="chips"></div>
+          <div id="poolResults"></div>
         </div>
-        <div id="enemyChips" class="chips"></div>
-        <div id="poolResults"></div>
-      </div>
-      <div class="panel">
-        <h2>📈 Meta picks you don't play (yet)</h2>
-        <p class="muted">Strong this season but missing (or rare) in your match history. Edit
-        <code>data/meta.json</code> in the repo to keep this list current with patches.</p>
-        <div id="metaResults"></div>
-      </div>
-      <div class="panel">
-        <h2>😨 Enemies you struggle against</h2>
-        <p class="muted">Your winrate whenever this champion is on the enemy team (any lane).</p>
-        <div id="nemesisResults"></div>
-      </div>
-    </section>
-
-    <!-- PROFILE -->
-    <section id="tab-profile" class="tab-content">
-      <div id="profileResults"></div>
-    </section>
-
-    <!-- CLIMB : trends, schedule, tilt, patches -->
-    <section id="tab-climb" class="tab-content hidden">
-      <div id="climbResults"></div>
-    </section>
-
-    <!-- LIVE GAME -->
-    <section id="tab-live" class="tab-content hidden">
-      <div class="panel">
-        <h2>Live Game Scouting</h2>
-        <p class="muted">Works once the game has started (loading screen / in game). For champ select,
-        use the Counter Finder tab.</p>
-        <button id="liveBtn" class="btn primary">Check live game</button>
-        <div id="liveResults"></div>
-      </div>
-    </section>
-
-    <!-- MATCHUPS -->
-    <section id="tab-matchups" class="tab-content hidden">
-      <div class="panel">
-        <h2>Lane Matchup History</h2>
-        <p class="muted">Direct lane opponents only (same position, opposite team). Click a column header to sort.</p>
-        <div class="filter-row">
-          <input id="muSearch" type="text" placeholder="Filter by champion (yours or theirs)…" autocomplete="off" />
-          <div id="muRole" class="role-picker" title="Filter by lane"></div>
-          <select id="muMinGames" title="Minimum games">
-            <option value="1">≥ 1 game</option>
-            <option value="2">≥ 2 games</option>
-            <option value="3">≥ 3 games</option>
-            <option value="5">≥ 5 games</option>
-          </select>
+        <div class="panel">
+          <h2>😨 Enemies you struggle against</h2>
+          <p class="muted">
+            Your winrate whenever this champion is on the enemy team (any lane).
+          </p>
+          <div id="nemesisResults"></div>
         </div>
-        <div id="matchupResults"></div>
-      </div>
-    </section>
-  </main>
+      </section>
 
-  <div id="welcome" class="welcome">
-    <h1>⚔️ LoL HardCounter</h1>
-    <p>Enter your <b>Riot ID</b> (name#tag), pick your region and hit <b>Analyze</b>.</p>
-    <p>It studies your match history and tells you <b>what to pick against whom</b> — based on
-    <em>your own</em> winrates, not just global stats. Plus builds, runes, live-game scouting and
-    team-comp insights.</p>
-    <p class="muted">First time? Click 🔑 to set your free Riot API key.</p>
-  </div>
+      <!-- PROFILE -->
+      <section id="tab-profile" class="tab-content">
+        <div id="profileResults"></div>
+      </section>
 
-  <footer class="footer">
-    LoL HardCounter isn't endorsed by Riot Games. League of Legends © Riot Games, Inc.
-    Static app — your key &amp; data never leave your browser.
-  </footer>
+      <!-- CLIMB : trends, schedule, tilt, patches -->
+      <section id="tab-climb" class="tab-content hidden">
+        <div id="climbResults"></div>
+      </section>
 
-  <script type="module" src="js/app.js"></script>
-</body>
+      <!-- LIVE GAME -->
+      <section id="tab-live" class="tab-content hidden">
+        <div class="panel">
+          <h2>Live Game Scouting</h2>
+          <p class="muted">
+            Works once the game has started (loading screen / in game). For
+            champ select, use the Counter Finder tab.
+          </p>
+          <button id="liveBtn" class="btn primary">Check live game</button>
+          <div id="liveResults"></div>
+        </div>
+      </section>
+
+      <!-- MATCHUPS -->
+      <section id="tab-matchups" class="tab-content hidden">
+        <div class="panel">
+          <h2>Lane Matchup History</h2>
+          <p class="muted">
+            Direct lane opponents only (same position, opposite team). Click a
+            column header to sort.
+          </p>
+          <div class="filter-row">
+            <input
+              id="muSearch"
+              type="text"
+              placeholder="Filter by champion (yours or theirs)…"
+              autocomplete="off"
+            />
+            <div id="muRole" class="role-picker" title="Filter by lane"></div>
+            <select id="muMinGames" title="Minimum games">
+              <option value="1">≥ 1 game</option>
+              <option value="2">≥ 2 games</option>
+              <option value="3">≥ 3 games</option>
+              <option value="5">≥ 5 games</option>
+            </select>
+          </div>
+          <div id="matchupResults"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="welcome" class="welcome">
+      <h1>⚔️ LoL HardCounter</h1>
+      <p>
+        Enter your <b>Riot ID</b> (name#tag) and hit <b>Analyze</b> — your
+        region is detected automatically.
+      </p>
+      <p>
+        It studies your match history and tells you
+        <b>what to pick against whom</b> — based on <em>your own</em> winrates,
+        not just global stats. Plus builds, runes, live-game scouting and
+        team-comp insights.
+      </p>
+    </div>
+
+    <footer class="footer">
+      LoL HardCounter isn't endorsed by Riot Games. League of Legends © Riot
+      Games, Inc.
+    </footer>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
 </html>

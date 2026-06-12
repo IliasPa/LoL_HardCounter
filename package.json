@@ -1,0 +1,10 @@
+{
+  "name": "lol-hardcounter",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "description": "Analyze your LoL match history — what to pick against whom, based on your own winrates.",
+  "engines": {
+    "node": ">=18"
+  }
+}
