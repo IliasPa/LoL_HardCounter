@@ -17,6 +17,7 @@ export function extractRecord(match, puuid) {
     team: p.teamId,
     win: p.win,
     me: p.puuid === puuid || undefined,
+    puuid: p.puuid,
     name: p.riotIdGameName || p.summonerName || '',
     k: p.kills, d: p.deaths, a: p.assists,
     lvl: p.champLevel,

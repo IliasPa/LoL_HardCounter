@@ -101,14 +101,14 @@
     <div class="summary-card" id="summaryCard"></div>
 
     <nav class="tabs">
-      <button class="tab active" data-tab="counter">🎯 Counter Finder & Pool</button>
-      <button class="tab" data-tab="profile">👤 Profile</button>
-      <button class="tab" data-tab="live">📡 Live Game</button>
+      <button class="tab active" data-tab="profile">👤 Profile</button>
+      <button class="tab" data-tab="counter">🏆 Champion Pool</button>
       <button class="tab" data-tab="matchups">⚔️ Matchups</button>
+      <button class="tab" data-tab="live">📡 Live Game</button>
     </nav>
 
-    <!-- COUNTER FINDER : use during champ select -->
-    <section id="tab-counter" class="tab-content">
+    <!-- CHAMPION POOL : also the champ-select helper -->
+    <section id="tab-counter" class="tab-content hidden">
       <div class="panel">
         <h2>Champ Select Helper — Your Champion Pool</h2>
         <p class="muted">Type the enemy champions as they get picked — the <b>Pick score</b> column combines
@@ -146,16 +146,6 @@
         <div id="metaResults"></div>
       </div>
       <div class="panel">
-        <h2>🛠️ Build lookup</h2>
-        <p class="muted">Look up builds &amp; runes for <b>any</b> champion seen in your analyzed matches —
-        including ones you don't play.</p>
-        <div class="champ-search">
-          <input id="buildSearch" type="text" placeholder="Search a champion…" autocomplete="off" />
-          <div id="buildSuggest" class="champ-suggest hidden"></div>
-        </div>
-        <div id="buildResults"></div>
-      </div>
-      <div class="panel">
         <h2>😨 Enemies you struggle against</h2>
         <p class="muted">Your winrate whenever this champion is on the enemy team (any lane).</p>
         <div id="nemesisResults"></div>
@@ -163,7 +153,7 @@
     </section>
 
     <!-- PROFILE -->
-    <section id="tab-profile" class="tab-content hidden">
+    <section id="tab-profile" class="tab-content">
       <div id="profileResults"></div>
     </section>
 

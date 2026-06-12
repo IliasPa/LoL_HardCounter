@@ -20,6 +20,7 @@ let importedCache = {}; // puuid -> {matchId: record} seeded from gist / JSON im
 // UI state
 let poolSort = { key: 'games', dir: -1 };   // champion pool sorting
 let poolExpanded = null;                    // champ id whose builds are expanded in the pool
+let poolShowAll = false;                    // pool "Show all champions" toggled
 let muSort = { key: 'games', dir: -1 };     // matchups sorting
 let expandedMatchId = null;                 // match id expanded in the Profile tab
 let profileShowAll = false;                 // "Show all games" toggled
@@ -32,7 +33,7 @@ const QUEUE_NAMES = {
   490: 'Quickplay', 450: 'ARAM', 700: 'Clash', 1700: 'Arena', 1900: 'URF',
 };
 const ROLE_LABEL = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
-const LP_PER_GAME = 25; // rough estimate; Riot's API doesn't expose LP per match
+const POOL_LIMIT = 10; // pool rows shown before "Show all"
 
 // ---------- Boot ----------
 init();
@@ -74,7 +75,6 @@ function init() {
   });
 
   setupChampSearch($('enemySearch'), $('enemySuggest'), c => { addEnemy(c.id); $('enemySearch').value = ''; });
-  setupChampSearch($('buildSearch'), $('buildSuggest'), c => { $('buildSearch').value = c.name; renderBuild(c.id); });
   $('clearEnemiesBtn').onclick = () => { enemyPicks = []; renderCounterTab(); };
   $('myRole').onchange = renderCounterTab;
   $('poolMinGames').onchange = renderPool;
@@ -356,6 +356,7 @@ async function syncToGist(token, gistId) {
 function renderAll() {
   expandedMatchId = null;
   poolExpanded = null;
+  poolShowAll = false;
   profileShowAll = false;
   live = null;
   renderSummary();
@@ -363,7 +364,6 @@ function renderAll() {
   renderProfile();
   renderNemesis();
   renderMatchups();
-  $('buildResults').innerHTML = '';
   $('liveResults').innerHTML = '';
 }
 
@@ -438,18 +438,32 @@ function renderProfile() {
       <h2>Recent games <span class="muted" style="font-weight:400;font-size:0.75em">
         last ${last20.length}: ${wins20}W ${last20.length - wins20}L (${last20.length ? Math.round(wins20 / last20.length * 100) : 0}%)
         · KDA ${(d === 0 ? k + a : (k + a) / d).toFixed(2)} · click a game for details</span></h2>
+      <div class="filter-row">
+        <input id="profileSearch" type="text" placeholder="Filter games by champion or player name…" autocomplete="off" />
+      </div>
       <div class="match-list" id="matchList"></div>
       <div id="moreMatchesSlot"></div>
     </div>`;
 
+  $('profileSearch').oninput = renderMatchList;
   renderMatchList();
 }
 
 function renderMatchList() {
-  const recent = [...records].sort((a, b) => b.ts - a.ts);
-  const shown = profileShowAll ? recent : recent.slice(0, 25);
-  $('matchList').innerHTML = shown.map(matchCard).join('');
-  $('moreMatchesSlot').innerHTML = (!profileShowAll && recent.length > 25)
+  const q = ($('profileSearch')?.value || '').toLowerCase().trim();
+  let recent = [...records].sort((a, b) => b.ts - a.ts);
+  if (q) {
+    recent = recent.filter(r =>
+      champOf(r.champ).name.toLowerCase().includes(q) ||
+      r.participants.some(p =>
+        champOf(p.champ).name.toLowerCase().includes(q) ||
+        (p.name || '').toLowerCase().includes(q)));
+  }
+  const shown = (profileShowAll || q) ? recent : recent.slice(0, 25);
+  $('matchList').innerHTML = shown.length
+    ? shown.map(matchCard).join('')
+    : '<p class="muted">No games match this filter.</p>';
+  $('moreMatchesSlot').innerHTML = (!profileShowAll && !q && recent.length > 25)
     ? `<button id="moreMatchesBtn" class="btn ghost" style="margin-top:10px">Show all ${recent.length} games</button>` : '';
 
   $('matchList').querySelectorAll('.match-card > .match-row').forEach(row => {
@@ -461,6 +475,54 @@ function renderMatchList() {
   });
   const moreBtn = $('moreMatchesBtn');
   if (moreBtn) moreBtn.onclick = () => { profileShowAll = true; renderMatchList(); };
+
+  // lazily fetch ranks for the expanded game's players
+  if (expandedMatchId) {
+    const r = records.find(x => x.id === expandedMatchId);
+    if (r) loadRanks(r);
+  }
+}
+
+// ---------- Per-player rank lookup (league-v4, cached per session) ----------
+const rankCache = new Map();   // puuid -> league entry | null
+const rankPending = new Set();
+
+async function loadRanks(r) {
+  if (!api) return;
+  const need = r.participants.filter(p => p.puuid && !rankCache.has(p.puuid) && !rankPending.has(p.puuid));
+  if (!need.length) return;
+  need.forEach(p => rankPending.add(p.puuid));
+  await Promise.all(need.map(async p => {
+    try {
+      const entries = await api.getLeagueEntries(p.puuid);
+      rankCache.set(p.puuid,
+        entries.find(e => e.queueType === 'RANKED_SOLO_5x5') ||
+        entries.find(e => e.queueType === 'RANKED_FLEX_SR') || null);
+    } catch {
+      rankCache.set(p.puuid, null);
+    } finally {
+      rankPending.delete(p.puuid);
+    }
+  }));
+  if (expandedMatchId === r.id) renderMatchList(); // fill the badges in
+}
+
+const TIER_ABBR = {
+  IRON: 'I', BRONZE: 'B', SILVER: 'S', GOLD: 'G', PLATINUM: 'P', EMERALD: 'E',
+  DIAMOND: 'D', MASTER: 'M', GRANDMASTER: 'GM', CHALLENGER: 'C',
+};
+const DIV_NUM = { I: '1', II: '2', III: '3', IV: '4' };
+
+function rankBadge(p) {
+  if (!p.puuid) return '';
+  if (!rankCache.has(p.puuid)) {
+    return rankPending.has(p.puuid) ? '<span class="rank-line muted">…</span>' : '';
+  }
+  const e = rankCache.get(p.puuid);
+  if (!e) return '<span class="rank-line muted">Unranked</span>';
+  const label = `${TIER_ABBR[e.tier] || e.tier[0]}${DIV_NUM[e.rank] || ''}`;
+  return `<span class="rank-line" title="${e.tier} ${e.rank} · ${e.leaguePoints} LP">
+    <img src="${crestUrl(e.tier)}" alt=""/>${label}</span>`;
 }
 
 function myParticipant(r) {
@@ -514,6 +576,7 @@ function matchDetail(r) {
     }
   }
 
+  const maxDmg = Math.max(...r.participants.map(p => p.dmg || 0), 1);
   const teamTable = (teamId, label) => {
     const ps = r.participants.filter(p => p.team === teamId);
     const won = ps[0]?.win;
@@ -522,7 +585,7 @@ function matchDetail(r) {
       <table class="detail-table"><thead><tr>
         <th>Champion</th><th>Player</th><th>KDA</th><th>CS</th><th>Gold</th><th>Dmg</th><th>Vision</th><th>Items</th>
       </tr></thead><tbody>
-        ${ps.map(p => participantRow(p, p === mine)).join('')}
+        ${ps.map(p => participantRow(p, p === mine, r.dur, maxDmg)).join('')}
       </tbody></table></div>`;
   };
   const enemyTeam = r.myTeam === 100 ? 200 : 100;
@@ -541,24 +604,44 @@ function matchDetail(r) {
   </div>`;
 }
 
-function participantRow(p, isMe) {
+function participantRow(p, isMe, dur, maxDmg) {
   const c = champOf(p.champ);
   const ks = dd.perks[p.keystone];
   const items = (p.items || []).map(id => {
     const it = dd.items[id];
     return it ? `<img src="${it.icon}" title="${it.name}" alt="" loading="lazy"/>` : '';
   }).join('');
-  const num = v => v !== undefined ? v : '<span class="muted">—</span>';
-  const thousands = v => v !== undefined ? `${(v / 1000).toFixed(1)}k` : '<span class="muted">—</span>';
+  const dash = '<span class="muted">—</span>';
+  const num = v => v !== undefined ? v : dash;
+
+  // KDA: raw line + calculated value, colored u.gg-style (gold ≥5, blue ≥3)
+  let kdaCell = dash;
+  if (p.k !== undefined) {
+    const v = p.d === 0 ? p.k + p.a : (p.k + p.a) / p.d;
+    const cls = v >= 5 ? 'kda-gold' : v >= 3 ? 'kda-blue' : 'muted';
+    kdaCell = `<b>${p.k}/${p.d}/${p.a}</b><span class="kda-calc ${cls}">${v.toFixed(2)}</span>`;
+  }
+
+  // CS + CS per minute underneath
+  const csCell = p.cs !== undefined
+    ? `<span>${p.cs}</span><span class="muted cs-min">${(p.cs / (dur / 60)).toFixed(1)}/m</span>`
+    : dash;
+
+  // damage bar normalized to the game's highest damage dealer
+  const dmgCell = p.dmg !== undefined
+    ? `<div class="dmg-cell"><span>${(p.dmg / 1000).toFixed(1)}k</span>
+        <span class="dmg-bar"><i style="width:${Math.round((p.dmg / maxDmg) * 100)}%"></i></span></div>`
+    : dash;
+
   return `<tr class="${isMe ? 'me-row' : ''}">
     <td><span class="champ-cell small">
       <img src="${c.icon}" alt="" loading="lazy"/>${ks ? `<img class="ks-icon" src="${ks.icon}" title="${ks.name}" alt=""/>` : ''}${c.name}${p.lvl !== undefined ? ` <span class="muted">lv${p.lvl}</span>` : ''}
     </span></td>
-    <td class="muted detail-player">${p.name || '—'}</td>
-    <td>${p.k !== undefined ? `<b>${p.k}/${p.d}/${p.a}</b>` : '<span class="muted">—</span>'}</td>
-    <td>${num(p.cs)}</td>
-    <td>${thousands(p.gold)}</td>
-    <td>${thousands(p.dmg)}</td>
+    <td class="muted detail-player"><div>${p.name || '—'}</div>${rankBadge(p)}</td>
+    <td class="kda-cell">${kdaCell}</td>
+    <td class="cs-cell">${csCell}</td>
+    <td>${p.gold !== undefined ? `${(p.gold / 1000).toFixed(1)}k` : dash}</td>
+    <td>${dmgCell}</td>
     <td>${num(p.vision)}</td>
     <td><div class="m-items">${items}</div></td>
   </tr>`;
@@ -645,7 +728,6 @@ function renderPool() {
     games: s.games,
     wr: winrate(s),
     kdaVal: kda(s),
-    lp: s.solo.games > 0 ? (s.solo.wins * 2 - s.solo.games) * LP_PER_GAME : null,
     score: scores[champ]?.score ?? 0,
     sugg: scores[champ],
   })).filter(d =>
@@ -654,18 +736,14 @@ function renderPool() {
     !taken.has(d.champ.toLowerCase()));
   data.sort((a, b) => -poolSort.dir * (b[poolSort.key] - a[poolSort.key]) || b.games - a.games);
 
+  const shown = poolShowAll ? data : data.slice(0, POOL_LIMIT);
   const bestScore = showEvidence && data.length ? Math.max(...data.map(d => d.score)) : null;
-  const colSpan = showEvidence ? 8 : 7;
+  const colSpan = showEvidence ? 7 : 6;
 
-  const rows = data.map(d => {
+  const rows = shown.map(d => {
     const { s } = d;
     const roles = Object.entries(s.roles).sort((a, b) => b[1].games - a[1].games)
       .map(([r, rs]) => `${ROLE_LABEL[r] || r} ${rs.games}g`).join(', ');
-    let lpCell = '<span class="muted">—</span>';
-    if (d.lp !== null) {
-      lpCell = `<span class="wr ${d.lp > 0 ? 'good' : d.lp < 0 ? 'bad' : 'mid'}">${d.lp > 0 ? '+' : ''}${d.lp} LP</span>
-        <span class="muted">(${s.solo.games}g solo)</span>`;
-    }
     const scoreCell = `<span class="wr ${d.score >= 0.55 ? 'good' : d.score <= 0.45 ? 'bad' : 'mid'}">
       ${d.score === bestScore ? '⭐ ' : ''}${Math.round(d.score * 100)}</span>` +
       (d.sugg?.evidenceGames ? ` <span class="badge blue">${d.sugg.evidenceGames}g vs picks</span>` : '');
@@ -680,7 +758,6 @@ function renderPool() {
       <td><b>${d.games}</b></td>
       <td>${wrSpan(d.wr, null)}</td>
       <td>${kdaSpan(d.kdaVal)}</td>
-      <td>${lpCell}</td>
       <td class="muted">${roles || '—'}</td>
     </tr>` + (expanded ? `<tr class="pool-detail"><td colspan="${colSpan}">${buildHtml(d.champ)}</td></tr>` : '');
   }).join('');
@@ -694,9 +771,12 @@ function renderPool() {
       ${sortTh(poolSort, 'games', 'Games')}
       ${sortTh(poolSort, 'wr', 'Winrate')}
       ${sortTh(poolSort, 'kdaVal', 'KDA')}
-      <th>Est. LP*</th><th>Roles</th>
-    </tr></thead><tbody>${rows}</tbody></table>
-     <p class="muted" style="margin-top:10px">*Estimated from net Ranked Solo wins × ${LP_PER_GAME} LP — Riot's API doesn't expose actual LP changes per match.</p>`;
+      <th>Roles</th>
+    </tr></thead><tbody>${rows}</tbody></table>` +
+    (data.length > POOL_LIMIT
+      ? `<button id="poolMoreBtn" class="btn ghost" style="margin-top:10px">
+          ${poolShowAll ? `Show top ${POOL_LIMIT} only` : `Show all ${data.length} champions you've played`}</button>`
+      : '');
 
   bindSortHeaders($('poolResults'), poolSort, renderPool);
   $('poolResults').querySelectorAll('tr.pool-row').forEach(tr => {
@@ -705,6 +785,8 @@ function renderPool() {
       renderPool();
     };
   });
+  const poolMoreBtn = $('poolMoreBtn');
+  if (poolMoreBtn) poolMoreBtn.onclick = () => { poolShowAll = !poolShowAll; renderPool(); };
 }
 
 function renderNemesis() {
@@ -764,10 +846,6 @@ function renderMatchups() {
 }
 
 // ---------- Builds & Runes ----------
-function renderBuild(champId) {
-  $('buildResults').innerHTML = buildHtml(champId);
-}
-
 function buildHtml(champId) {
   const b = buildStats(records, champId);
   const c = champOf(champId);
