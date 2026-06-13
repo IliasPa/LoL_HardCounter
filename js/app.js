@@ -74,12 +74,9 @@ function init() {
   $('settingsBtn').onclick = () => $('settingsPanel').classList.toggle('hidden');
   $('clearCacheBtn').onclick = () => {
     const n = store.clearMatchCache();
-    importedCache = {}; // also drop records loaded from gist sync / file imports this session
-    $('cacheStatus').textContent = `Cleared ${n} cached matches from this browser (and any synced/imported data in memory). The next Analyze refetches everything from Riot.`;
+    importedCache = {};      // drop any in-memory records from this session
+    $('cacheStatus').textContent = `Cleared ${n} cached matches from this browser. The next Analyze refetches everything from Riot.`;
   };
-  $('exportBtn').onclick = exportData;
-  $('importBtn').onclick = () => $('importFile').click();
-  $('importFile').onchange = importData;
   $('analyzeBtn').onclick = analyze;
   $('riotId').addEventListener('keydown', e => { if (e.key === 'Enter') analyze(); });
   $('progressCancel').onclick = () => {
@@ -104,56 +101,6 @@ function init() {
   $('muSearch').oninput = renderMatchups;
   buildRolePicker($('muRole'), renderMatchups);
   $('muMinGames').onchange = renderMatchups;
-}
-
-// ---------- JSON file export / import ----------
-function exportData() {
-  if (!account || !records.length) {
-    $('fileStatus').textContent = 'Nothing to export yet — run an analysis first.';
-    return;
-  }
-  const payload = exportPayload();
-  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `hardcounter_${account.gameName}_${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  $('fileStatus').textContent = `Exported ${payload.records.length} matches.`;
-}
-
-function exportPayload() {
-  // union of what we just analyzed and anything previously imported/synced for this account
-  const merged = { ...(importedCache[account.puuid] || {}) };
-  for (const r of records) merged[r.id] = r;
-  return {
-    v: 1,
-    account: { puuid: account.puuid, gameName: account.gameName, tagLine: account.tagLine, region: api?.platform || '' },
-    savedAt: Date.now(),
-    records: Object.values(merged).sort((a, b) => b.ts - a.ts),
-  };
-}
-
-function importData(e) {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const payload = JSON.parse(reader.result);
-      if (!payload?.account?.puuid || !Array.isArray(payload.records)) throw new Error('bad format');
-      const map = importedCache[payload.account.puuid] ??= {};
-      for (const r of payload.records) map[r.id] = r;
-      // best-effort persist a slice to localStorage too (quota permitting)
-      payload.records.slice(0, 500).forEach(r => store.cacheRecord(payload.account.puuid, r.id, r));
-      $('fileStatus').textContent =
-        `✅ Imported ${payload.records.length} matches for ${payload.account.gameName}#${payload.account.tagLine}. Hit Analyze to use them.`;
-    } catch {
-      $('fileStatus').textContent = '❌ That file is not a valid HardCounter export.';
-    }
-  };
-  reader.readAsText(file);
 }
 
 // ---------- UI helpers ----------
@@ -254,23 +201,6 @@ async function analyze() {
       api.getLeagueEntries(account.puuid).catch(() => []),
     ]);
 
-    // Pull previously synced data from GitHub so we don't refetch those matches
-    // (server-side token; silently skipped if GitHub sync isn't configured)
-    let gistId = store.getSettings().gistId || null;
-    try {
-      setProgress('Loading saved data from GitHub…', 0.08);
-      gistId = await gist.ensureGist(gistId);
-      store.saveSettings({ gistId });
-      const saved = await gist.loadAccountData(gistId, account.puuid);
-      if (saved?.records) {
-        const map = importedCache[account.puuid] ??= {};
-        for (const r of saved.records) map[r.id] ??= r;
-      }
-    } catch (e) {
-      console.warn('GitHub sync unavailable:', e.message);
-      gistId = null;
-    }
-
     setProgress('Fetching match list…', 0.1);
     const idOpts = queueFilter === 'ranked-solo' ? { queue: 420 }
                  : queueFilter === 'ranked-all' ? { type: 'ranked' }
@@ -346,8 +276,8 @@ async function analyze() {
     $('welcome').classList.add('hidden');
     $('app').classList.remove('hidden');
 
-    // Sync to GitHub immediately (non-blocking; only if sync is configured server-side)
-    if (gistId) syncToGist(gistId);
+    // Log this analysis (parameters only) to GitHub (non-blocking; off if not configured)
+    logToGist();
   } catch (e) {
     hideProgress();
     showError(e instanceof RiotAPIError ? e.message : (e.message || String(e)));
@@ -356,15 +286,35 @@ async function analyze() {
   }
 }
 
-async function syncToGist(gistId) {
+// One log entry = the parameters of this analysis run (no match results)
+function analysisEntry() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const time = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return {
+    time,
+    puuid: account.puuid,
+    gameName: account.gameName,
+    tagLine: account.tagLine,
+    region: api?.platform || '',
+    riotId: `${account.gameName}#${account.tagLine}`,
+    queue: $('queueFilter').value,
+    count: $('matchCount').value,
+  };
+}
+
+async function logToGist() {
   const el = $('syncStatus');
+  let gistId = store.getSettings().gistId || null;
   try {
-    el.textContent = '☁️ Syncing to GitHub…';
-    const payload = exportPayload();
-    await gist.saveAccountData(gistId, account.puuid, payload);
-    el.textContent = `☁️ Synced ${payload.records.length} matches to GitHub ✅`;
+    el.textContent = '☁️ Logging analysis to GitHub…';
+    gistId = await gist.ensureGist(gistId);
+    store.saveSettings({ gistId });
+    await gist.appendAnalysis(gistId, analysisEntry());
+    el.textContent = '☁️ Analysis logged to GitHub ✅';
   } catch (e) {
-    el.textContent = `☁️ GitHub sync failed: ${e.message}`;
+    // Sync not configured (no server token) is normal — stay quiet about it
+    el.textContent = /not configured/i.test(e.message) ? '' : `☁️ GitHub log failed: ${e.message}`;
   }
 }
 

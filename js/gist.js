@@ -1,13 +1,10 @@
 // GitHub Gist sync — talks to our own /api/gist serverless proxy (which holds the
-// secret token). Stores analyzed match data in one private gist (one JSON file per
-// account), so it survives browsers and devices. Disabled if the server has no token.
+// secret token). Keeps a single private gist that logs the *parameters* of every
+// analysis run (no match results). Disabled if the server has no token.
 
 const PROXY = '/api/gist';
-const GIST_DESC = 'LoL HardCounter data (auto-managed)';
-
-function fileName(puuid) {
-  return `lol-hardcounter_${puuid.slice(0, 12)}.json`;
-}
+const GIST_DESC = 'LoL HardCounter analysis log (auto-managed)';
+const LOG_FILE = 'lol-hardcounter-log.json';
 
 async function gh(path, opts = {}) {
   const res = await fetch(`${PROXY}?path=${encodeURIComponent(path)}`, {
@@ -46,25 +43,28 @@ export async function ensureGist(cachedId = null) {
   return (await createRes.json()).id;
 }
 
-/** Save one account's records to the gist. */
-export async function saveAccountData(gistId, puuid, payload) {
+/** Read the current analysis log (array of param entries). */
+async function loadLog(gistId) {
+  const res = await gh(`/gists/${gistId}`);
+  if (!res.ok) return [];
+  const gist = await res.json();
+  const file = gist.files?.[LOG_FILE];
+  if (!file) return [];
+  // Gist API truncates file content over ~1MB — fall back to the raw URL
+  const text = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
+  try { const parsed = JSON.parse(text); return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
+}
+
+/** Append one analysis (parameters only) to the log and save it back. */
+export async function appendAnalysis(gistId, entry) {
+  const log = await loadLog(gistId);
+  log.push(entry);
   const res = await gh(`/gists/${gistId}`, {
     method: 'PATCH',
     body: JSON.stringify({
-      files: { [fileName(puuid)]: { content: JSON.stringify(payload) } },
+      files: { [LOG_FILE]: { content: JSON.stringify(log, null, 2) } },
     }),
   });
-  if (!res.ok) throw new Error('Could not save data to the GitHub gist.');
-}
-
-/** Load one account's records from the gist. Returns payload or null. */
-export async function loadAccountData(gistId, puuid) {
-  const res = await gh(`/gists/${gistId}`);
-  if (!res.ok) return null;
-  const gist = await res.json();
-  const file = gist.files?.[fileName(puuid)];
-  if (!file) return null;
-  // Gist API truncates file content over ~1MB — fall back to the raw URL
-  const text = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
-  try { return JSON.parse(text); } catch { return null; }
+  if (!res.ok) throw new Error('Could not write to the GitHub gist.');
 }

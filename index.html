@@ -42,12 +42,10 @@
     </header>
 
     <div id="settingsPanel" class="settings hidden">
-      <h3>⚙️ Data &amp; cache</h3>
+      <h3>⚙️ Cache</h3>
       <p>
-        Your Riot API key and (optional) GitHub sync token live on the
-        <strong>server</strong> as Vercel environment variables — nothing
-        sensitive is stored in your browser. Analyzed matches are cached locally
-        so re-analyzing is fast; clear that cache to force a fresh fetch.
+        Analyzed matches are cached locally so re-analyzing is fast; clear that
+        cache to force a fresh fetch.
       </p>
       <div class="settings-row">
         <button id="clearCacheBtn" class="btn ghost">
@@ -55,23 +53,6 @@
         </button>
       </div>
       <p id="cacheStatus" class="muted"></p>
-
-      <h3 style="margin-top: 18px">📁 JSON file backup</h3>
-      <p>
-        Prefer a plain file? Export your analyzed data as JSON, and import it
-        later (or on another machine).
-      </p>
-      <div class="settings-row">
-        <button id="exportBtn" class="btn ghost">⬇️ Export data (.json)</button>
-        <button id="importBtn" class="btn ghost">⬆️ Import data (.json)</button>
-        <input
-          id="importFile"
-          type="file"
-          accept=".json,application/json"
-          class="hidden"
-        />
-      </div>
-      <p id="fileStatus" class="muted"></p>
     </div>
 
     <div id="progress" class="progress hidden">
